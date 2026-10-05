@@ -1,0 +1,43 @@
+services:
+  nuxt:
+    image: node:22-alpine
+    container_name: nuxt-app
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - nuxt_node_modules:/app/node_modules
+      - nuxt_nuxt:/app/.nuxt
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      NUXT_HOST: 0.0.0.0
+      NUXT_PORT: 3000
+      NUXT_TELEMETRY_DISABLED: 1
+    command: sh /app/scripts/entrypoint.nuxt.sh
+    restart: unless-stopped
+
+  electron:
+    build:
+      context: .
+      dockerfile: Dockerfile.electron
+    container_name: electron-app
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - electron_node_modules:/app/node_modules
+      - /tmp/.X11-unix:/tmp/.X11-unix
+    environment:
+      - NODE_ENV=development
+      - DISPLAY=${DISPLAY}
+    depends_on:
+      - nuxt
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    command: sh /app/scripts/entrypoint.electron.sh
+
+volumes:
+  nuxt_node_modules:
+  nuxt_nuxt:
+  electron_node_modules:
