@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'path';
 import { dbManager } from './db/sqlite';
 
@@ -36,6 +37,32 @@ app.whenReady().then(() => {
     ipcMain.handle('app:get-version', (): string => app.getVersion());
     ipcMain.handle('db:get-status', () => dbManager.getStatus());
     ipcMain.handle('files:list', () => dbManager.listFiles());
+    ipcMain.handle('files:add-tag', (_event, data: { fileId: number; tag: string }) =>
+        dbManager.addFileTag(data.fileId, data.tag));
+    ipcMain.handle('files:remove-tag', (_event, data: { fileId: number; tag: string }) =>
+        dbManager.removeFileTag(data.fileId, data.tag));
+    ipcMain.handle('files:set-note', (_event, data: { fileId: number; note: string }) =>
+        dbManager.setFileNote(data.fileId, data.note));
+    ipcMain.handle('files:open', async (_event, fileId: number) => {
+        const filePath = dbManager.getFilePath(fileId);
+        const error = await shell.openPath(filePath);
+        if (error) throw new Error(error);
+    });
+    ipcMain.handle('files:show-in-folder', (_event, fileId: number) => {
+        const filePath = dbManager.getFilePath(fileId);
+        if (!fs.existsSync(filePath)) throw new Error('Indexed file does not exist on disk');
+        shell.showItemInFolder(filePath);
+    });
+    ipcMain.handle('files:delete', async (_event, data: { fileId: number; mode: 'trash' | 'permanent' }) => {
+        if (data.mode !== 'trash' && data.mode !== 'permanent') throw new Error('Invalid delete mode');
+        const filePath = dbManager.getFilePath(data.fileId);
+        if (fs.existsSync(filePath)) {
+            if (!fs.statSync(filePath).isFile()) throw new Error('Indexed path is not a file');
+            if (data.mode === 'trash') await shell.trashItem(filePath);
+            else fs.unlinkSync(filePath);
+        }
+        dbManager.removeFileRecord(data.fileId);
+    });
     ipcMain.handle('files:get-image-preview', (_event, fileId: number) => dbManager.getImagePreview(fileId));
     ipcMain.handle('files:folders', () => dbManager.listFolders());
     ipcMain.handle('files:search', (_event, query: string) => dbManager.search(query));

@@ -5,6 +5,7 @@ export interface LocalFile {
     extension: string
     size: string
     mtime: string
+    mtimeValue?: number
     tags: string[]
     snippet: string
     summary: string

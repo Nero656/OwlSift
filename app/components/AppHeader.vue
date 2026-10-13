@@ -2,7 +2,28 @@
 const { files, searchQuery, addFolder, searchIndexedFiles } = useFiles()
 const { t, language } = useLanguage()
 const isIndexing = ref(false)
+const searchShortcut = ref('Ctrl+K')
+const searchInput = ref<HTMLInputElement | null>(null)
+let usesMetaShortcut = false
 let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+const handleSearchShortcut = (event: KeyboardEvent) => {
+  const modifierPressed = usesMetaShortcut ? event.metaKey : event.ctrlKey
+  if (!modifierPressed || event.altKey || event.key.toLowerCase() !== 'k') return
+
+  event.preventDefault()
+  searchInput.value?.focus()
+  searchInput.value?.select()
+}
+
+onMounted(() => {
+  const platform = window.electron?.platform ?? navigator.platform
+  usesMetaShortcut = platform.toLowerCase().includes('darwin') || platform.toLowerCase().includes('mac')
+  searchShortcut.value = usesMetaShortcut ? '⌘K' : 'Ctrl+K'
+  window.addEventListener('keydown', handleSearchShortcut)
+})
+
+onBeforeUnmount(() => window.removeEventListener('keydown', handleSearchShortcut))
 
 watch(searchQuery, (query) => {
   if (searchTimer) clearTimeout(searchTimer)
@@ -86,6 +107,7 @@ const toggleTheme = () => {
         />
 
         <input
+            ref="searchInput"
             v-model="searchQuery"
             type="text"
             :placeholder="t('searchPlaceholder')"
@@ -105,7 +127,7 @@ const toggleTheme = () => {
                  text-[11px] font-medium text-gray-400
                  dark:border-gray-600 dark:bg-gray-700"
         >
-          ⌘K
+          {{ searchShortcut }}
         </span>
       </div>
     </div>
