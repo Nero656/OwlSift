@@ -11,6 +11,7 @@ const {
 
 const route = useRoute()
 const { t } = useLanguage()
+const isCompact = useState('sidebar-compact', () => false)
 
 const isActive = (item: { id: string; route: string }) => {
   if (item.id === 'search') {
@@ -33,7 +34,7 @@ const navItems = computed(() => [
     label: t('workspaces'),
     route: '/folders',
     icon: 'lucide:folder-git-2',
-    badge: '3'
+    badge: String(folders.value.length)
   },
   {
     id: 'ai',
@@ -58,11 +59,10 @@ const navItems = computed(() => [
 
 <template>
   <aside
-      class="flex w-64 shrink-0 flex-col justify-between
-           border-r border-gray-200 bg-white/50
-           dark:border-gray-800 dark:bg-gray-900/50"
+      class="flex shrink-0 flex-col justify-between border-r border-gray-200 bg-white/50 transition-[width] duration-200 dark:border-gray-800 dark:bg-gray-900/50"
+      :class="isCompact ? 'w-16' : 'w-64'"
   >
-    <div class="space-y-6 p-3">
+    <div :class="isCompact ? 'space-y-4 p-2' : 'space-y-6 p-3'">
 
       <!-- Navigation -->
 
@@ -76,12 +76,13 @@ const navItems = computed(() => [
             :route="item.route"
             :badge="item.badge"
             :active="isActive(item)"
+            :compact="isCompact"
         />
       </nav>
 
       <!-- Workspaces -->
 
-      <section>
+      <section v-if="!isCompact">
         <div
             class="mb-2 flex items-center justify-between
              px-3.5 text-[10px] font-bold
@@ -111,6 +112,20 @@ const navItems = computed(() => [
 
     <!-- System status -->
 
-    <Sqlite_status/>
+    <div>
+      <Sqlite_status v-if="!isCompact" />
+      <div class="flex p-2" :class="isCompact ? 'justify-center border-t border-gray-200 dark:border-gray-800' : 'justify-end'">
+        <button
+          type="button"
+          class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          :title="isCompact ? t('expandSidebar') : t('collapseSidebar')"
+          :aria-label="isCompact ? t('expandSidebar') : t('collapseSidebar')"
+          :aria-pressed="isCompact"
+          @click="isCompact = !isCompact"
+        >
+          <Icon :name="isCompact ? 'lucide:panel-left-open' : 'lucide:panel-left-close'" size="17" />
+        </button>
+      </div>
+    </div>
   </aside>
 </template>

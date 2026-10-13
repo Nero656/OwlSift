@@ -2,18 +2,20 @@
   "name": "vue3app",
   "private": true,
   "version": "1.0.0",
-  "main": "dist/main.js",
+  "main": "electron-dist/main.js",
   "scripts": {
     "dev": "nuxt dev",
+    "generate": "nuxt generate",
     "prebuild:electron": "node scripts/ensure-database.cjs",
-    "build:electron": "tsc -p tsconfig.electron.json",
+    "build:electron": "tsc -p tsconfig.electron.json && node scripts/prepare-electron-build.cjs",
     "electron:dev": "npm run build:electron && electron dist/main.js --no-sandbox",
-    "electron:build": "npm run build:electron && electron-builder"
+    "electron:build": "npm run generate && npm run build:electron && electron-builder --publish never"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
     "@formkit/auto-animate": "^0.10.0",
     "@nuxt/ui": "^4.11.2",
+    "@nuxtjs/color-mode": "^4.0.1",
     "@types/better-sqlite3": "^9.6.0",
     "electron": "^38.8.6",
     "electron-builder": "^26.0.0",
@@ -26,10 +28,37 @@
     "better-sqlite3": "^13.0.3"
   },
   "build": {
+    "appId": "com.localmind.desktop",
+    "productName": "LocalMind",
+    "directories": {
+      "output": "release"
+    },
+    "npmRebuild": false,
+    "files": [
+      "electron-dist/**",
+      "package.json"
+    ],
+    "win": {
+      "target": ["nsis"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": ["dmg"]
+    },
+    "linux": {
+      "target": ["AppImage"]
+    },
     "extraResources": [
       {
         "from": "database/localmind.db",
         "to": "database/localmind.db"
+      },
+      {
+        "from": ".output/public",
+        "to": "app"
       }
     ]
   }
