@@ -12,12 +12,28 @@ const {
   clear
 } = useAi()
 const { t, language } = useLanguage()
+const imagePreview = ref<string | null>(null)
+let imagePreviewRequest = 0
 
 const rightTab = ref<'chat' | 'summary'>('chat')
 
 const userQuery = ref('')
 
 const samplePrompts = computed(() => [t('promptTerms'), t('promptPrices'), t('promptTakeaways')])
+
+watch(() => activeFile.value?.id, async (fileId) => {
+  const request = ++imagePreviewRequest
+  imagePreview.value = null
+  const extension = activeFile.value?.extension.toLowerCase()
+  if (!fileId || !extension || !['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(extension)) return
+
+  try {
+    const preview = await window.electron.invoke('files:get-image-preview', fileId)
+    if (request === imagePreviewRequest) imagePreview.value = preview
+  } catch (error) {
+    console.warn('Could not load selected image preview:', error)
+  }
+})
 
 const sendPrompt = async (prompt: string) => {
   userQuery.value = prompt
@@ -109,6 +125,13 @@ const addTag = () => {
       >
         {{ activeFile.path }}
       </p>
+
+      <img
+          v-if="imagePreview"
+          :src="imagePreview"
+          :alt="activeFile.name"
+          class="mt-3 max-h-64 w-full rounded-xl border border-gray-200/70 bg-gray-50 object-contain dark:border-gray-700 dark:bg-gray-950/40"
+      />
     </div>
 
     <!-- No file -->

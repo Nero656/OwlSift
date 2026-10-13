@@ -14,9 +14,21 @@ if [ ! -f "package.json" ]; then
   "scripts": {
     "dev": "nuxt dev",
     "build": "nuxt build",
+    "prebuild:electron": "node scripts/ensure-database.cjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "electron:dev": "npm run build:electron && electron dist/main.js --no-sandbox",
-    "electron:build": "electron-builder"
+    "electron:build": "npm run build:electron && electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3"
+  },
+  "build": {
+    "extraResources": [
+      {
+        "from": "database/localmind.db",
+        "to": "database/localmind.db"
+      }
+    ]
   },
   "devDependencies": {
     "@formkit/auto-animate": "^0.10.0",

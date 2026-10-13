@@ -9,7 +9,12 @@ const allowedSendChannels = [
 
 const allowedInvokeChannels = [
     'app:get-version',
-    'db:get-status'
+    'db:get-status',
+    'files:list',
+    'files:get-image-preview',
+    'files:folders',
+    'files:search',
+    'files:choose-and-index'
 ] as const;
 
 const allowedOnChannels = [
