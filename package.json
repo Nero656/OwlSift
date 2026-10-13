@@ -2,6 +2,7 @@
   "name": "vue3app",
   "private": true,
   "version": "1.0.0",
+  "packageManager": "pnpm@11.25.0",
   "main": "electron-dist/main.js",
   "scripts": {
     "dev": "nuxt dev",

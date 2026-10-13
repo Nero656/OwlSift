@@ -13,6 +13,7 @@ export interface IElectronAPI {
     invoke(channel: 'files:open', data: number): Promise<void>;
     invoke(channel: 'files:show-in-folder', data: number): Promise<void>;
     invoke(channel: 'files:delete', data: { fileId: number }): Promise<void>;
+    invoke(channel: 'files:delete-from-disk', data: { fileId: number; mode: 'trash' | 'permanent' }): Promise<void>;
     invoke(channel: 'files:get-image-preview', data: number): Promise<string | null>;
     invoke(channel: 'files:folders', data?: unknown): Promise<Array<{ name: string; path: string; count: number }>>;
     invoke(channel: 'files:search', data: string): Promise<IndexedFileRecord[]>;

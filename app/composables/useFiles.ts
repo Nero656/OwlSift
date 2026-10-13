@@ -142,6 +142,15 @@ export const useFiles = () => {
         folders.value = await window.electron.invoke('files:folders')
     }
 
+    const deleteFileFromDisk = async (fileId: number, mode: 'trash' | 'permanent') => {
+        if (!isElectron) throw new Error('Deleting files is available in the desktop app')
+        await window.electron.invoke('files:delete-from-disk', { fileId, mode })
+        files.value = files.value.filter(file => file.id !== fileId)
+        if (searchResults.value) searchResults.value = searchResults.value.filter(file => file.id !== fileId)
+        if (activeFile.value?.id === fileId) activeFile.value = null
+        folders.value = await window.electron.invoke('files:folders')
+    }
+
     const searchIndexedFiles = async (query: string) => {
         const request = ++searchRequestId
         if (!query.trim()) {
@@ -214,6 +223,6 @@ export const useFiles = () => {
     return {
         files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder,
         activeFile, filteredFiles, selectFile, getFileTypeCount,
-        loadIndex, addFolder, removeIndexedFolder, addTagToFile, removeTagFromFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, searchIndexedFiles,
+        loadIndex, addFolder, removeIndexedFolder, addTagToFile, removeTagFromFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles,
     }
 }

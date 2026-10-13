@@ -38,13 +38,21 @@ watch(searchQuery, (query) => {
 const handleAddFolder = async () => {
   if (isIndexing.value) return
   isIndexing.value = true
+  indexNotice.value = ''
   try {
     const result = await addFolder()
     if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
-    indexNotice.value = result?.skippedCount ? `${t('folderLimitReached')} ${result.skippedCount}` : ''
+    if (result) {
+      indexNotice.value = result.indexedCount === 0
+        ? t('folderNoFilesIndexed')
+        : `${t('folderFilesIndexed')} ${result.indexedCount}${result.skippedCount ? `. ${t('folderLimitReached')} ${result.skippedCount}` : ''}`
+    }
     if (indexNotice.value) indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
   } catch (error) {
     console.error('Could not index selected folder:', error)
+    indexNotice.value = t('folderIndexError')
+    if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+    indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
   } finally {
     isIndexing.value = false
   }

@@ -21,6 +21,7 @@ interface ElectronBridge {
   invoke(channel: 'files:open', fileId: number): Promise<void>
   invoke(channel: 'files:show-in-folder', fileId: number): Promise<void>
   invoke(channel: 'files:delete', data: { fileId: number }): Promise<void>
+  invoke(channel: 'files:delete-from-disk', data: { fileId: number; mode: 'trash' | 'permanent' }): Promise<void>
   invoke(channel: 'files:get-image-preview', fileId: number): Promise<string | null>
   invoke(channel: 'files:folders'): Promise<Array<{ name: string; path: string; count: number }>>
   invoke(channel: 'files:search', query: string): Promise<IndexedFileRecord[]>
