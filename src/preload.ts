@@ -8,7 +8,8 @@ const allowedSendChannels = [
 ] as const;
 
 const allowedInvokeChannels = [
-    'app:get-version'
+    'app:get-version',
+    'db:get-status'
 ] as const;
 
 const allowedOnChannels = [

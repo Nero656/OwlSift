@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
 import path from 'path';
+import { dbManager } from './db/sqlite';
 
 app.commandLine.appendSwitch('ozone-platform', 'x11');
 app.commandLine.appendSwitch('no-sandbox');
@@ -26,7 +27,14 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+    try {
+        dbManager.init();
+    } catch (error) {
+        console.error('Failed to initialize SQLite:', error);
+    }
+
     ipcMain.handle('app:get-version', (): string => app.getVersion());
+    ipcMain.handle('db:get-status', () => dbManager.getStatus());
 
     ipcMain.on('app:minimize', (): void => {
         win?.minimize();
@@ -45,5 +53,6 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', (): void => {
+    dbManager.close();
     if (process.platform !== 'darwin') app.quit();
 });
