@@ -344,7 +344,7 @@ class DatabaseManager {
           extension = excluded.extension,
           size = excluded.size,
           mtime = excluded.mtime,
-          content = excluded.content;
+          content = excluded.content,
           is_deleted = 0;
       `);
             stmt.run(file);

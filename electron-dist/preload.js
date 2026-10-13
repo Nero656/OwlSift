@@ -16,6 +16,7 @@ const allowedInvokeChannels = [
     'files:open',
     'files:show-in-folder',
     'files:delete',
+    'files:delete-from-disk',
     'files:get-image-preview',
     'files:folders',
     'files:search',
