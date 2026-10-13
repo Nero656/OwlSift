@@ -4,8 +4,10 @@ const { t, language } = useLanguage()
 const isIndexing = ref(false)
 const searchShortcut = ref('Ctrl+K')
 const searchInput = ref<HTMLInputElement | null>(null)
+const indexNotice = ref('')
 let usesMetaShortcut = false
 let searchTimer: ReturnType<typeof setTimeout> | undefined
+let indexNoticeTimer: ReturnType<typeof setTimeout> | undefined
 
 const handleSearchShortcut = (event: KeyboardEvent) => {
   const modifierPressed = usesMetaShortcut ? event.metaKey : event.ctrlKey
@@ -23,7 +25,10 @@ onMounted(() => {
   window.addEventListener('keydown', handleSearchShortcut)
 })
 
-onBeforeUnmount(() => window.removeEventListener('keydown', handleSearchShortcut))
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleSearchShortcut)
+  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+})
 
 watch(searchQuery, (query) => {
   if (searchTimer) clearTimeout(searchTimer)
@@ -34,7 +39,10 @@ const handleAddFolder = async () => {
   if (isIndexing.value) return
   isIndexing.value = true
   try {
-    await addFolder()
+    const result = await addFolder()
+    if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+    indexNotice.value = result?.skippedCount ? `${t('folderLimitReached')} ${result.skippedCount}` : ''
+    if (indexNotice.value) indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
   } catch (error) {
     console.error('Could not index selected folder:', error)
   } finally {
@@ -135,6 +143,7 @@ const toggleTheme = () => {
     <!-- Actions -->
 
     <div class="flex items-center gap-3">
+      <span v-if="indexNotice" class="max-w-56 text-xs text-amber-600 dark:text-amber-400" role="status">{{ indexNotice }}</span>
       <div
           class="hidden items-center gap-2 rounded-lg
                bg-gray-100 px-3 py-1.5 text-xs

@@ -20,7 +20,8 @@ const allowedInvokeChannels = [
     'files:get-image-preview',
     'files:folders',
     'files:search',
-    'files:choose-and-index'
+    'files:choose-and-index',
+    'folders:remove-from-index'
 ] as const;
 
 const allowedOnChannels = [

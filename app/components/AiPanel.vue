@@ -20,7 +20,6 @@ const newTag = ref('')
 const tagError = ref('')
 const fileActionError = ref('')
 const isDeleteDialogOpen = ref(false)
-const deleteMode = ref<'trash' | 'permanent'>('trash')
 const isDeleting = ref(false)
 
 const userQuery = ref('')
@@ -143,7 +142,7 @@ const confirmDeleteFile = async () => {
   fileActionError.value = ''
   try {
     await persistPendingNote()
-    await deleteIndexedFile(file.id, deleteMode.value)
+    await deleteIndexedFile(file.id)
     isDeleteDialogOpen.value = false
   } catch (error) {
     console.error('Could not delete indexed file:', error)
@@ -172,7 +171,7 @@ const confirmDeleteFile = async () => {
       <div
           class="mb-2 flex items-center justify-between"
       >
-        <span
+          <span
             class="flex items-center gap-1 text-[10px]
                  font-bold uppercase tracking-wider
                  text-emerald-500"
@@ -225,9 +224,9 @@ const confirmDeleteFile = async () => {
         <button
           type="button"
           class="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-2.5 py-1.5 text-xs font-medium text-rose-600 transition hover:bg-rose-500/20 dark:text-rose-400"
-          @click="isDeleteDialogOpen = true; deleteMode = 'trash'; fileActionError = ''"
+          @click="isDeleteDialogOpen = true; fileActionError = ''"
         >
-          <Icon name="lucide:trash-2" size="14" />{{ t('deleteFile') }}
+          <Icon name="lucide:trash-2" size="14" />{{ t('removeFromIndex') }}
         </button>
       </div>
       <p v-if="fileActionError" class="mt-2 text-xs text-rose-500" role="alert">{{ fileActionError }}</p>
@@ -616,23 +615,11 @@ const confirmDeleteFile = async () => {
             <Icon name="lucide:triangle-alert" size="20" />
           </div>
           <div class="min-w-0">
-            <h2 id="delete-file-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">{{ t('deleteDialogTitle') }}</h2>
+            <h2 id="delete-file-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">{{ t('removeFromIndexTitle') }}</h2>
             <p class="mt-1 break-words text-sm text-gray-500">{{ activeFile?.name }}</p>
-            <p class="mt-1 text-xs text-gray-500">{{ t('deleteDialogMessage') }}</p>
+            <p class="mt-1 text-xs text-gray-500">{{ t('removeFromIndexMessage') }}</p>
           </div>
         </div>
-
-        <label class="block text-xs font-medium text-gray-600 dark:text-gray-300">
-          {{ t('deleteMode') }}
-          <select v-model="deleteMode" class="mt-1.5 w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-800">
-            <option value="trash">{{ t('moveToTrash') }}</option>
-            <option value="permanent">{{ t('deletePermanently') }}</option>
-          </select>
-        </label>
-
-        <p v-if="deleteMode === 'permanent'" class="mt-3 rounded-lg bg-rose-500/10 p-2.5 text-xs leading-relaxed text-rose-600 dark:text-rose-400">
-          {{ t('permanentDeleteWarning') }}
-        </p>
         <p v-if="fileActionError" class="mt-3 text-xs text-rose-500" role="alert">{{ fileActionError }}</p>
 
         <div class="mt-5 flex justify-end gap-2">
@@ -649,7 +636,7 @@ const confirmDeleteFile = async () => {
             @click="confirmDeleteFile"
           >
             <Icon v-if="isDeleting" name="lucide:loader-2" size="14" class="animate-spin" />
-            {{ t('confirmDelete') }}
+            {{ t('removeFromIndex') }}
           </button>
         </div>
       </section>

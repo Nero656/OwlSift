@@ -46,9 +46,18 @@ export const useFiles = () => {
     const sortBy = useState('file-sort', () => 'relevance')
     const activeFile = useState<LocalFile | null>('active-file', () => null)
     const showFilePreview = useState('show-file-preview', () => true)
+    const maxFilesPerFolder = useState('max-files-per-folder', () => 1000)
     let searchRequestId = 0
 
     const isElectron = typeof window !== 'undefined' && 'electron' in window
+
+    onMounted(() => {
+        const savedLimit = Number(localStorage.getItem('max-files-per-folder'))
+        if ([100, 500, 1000, 2500, 5000].includes(savedLimit)) maxFilesPerFolder.value = savedLimit
+    })
+    watch(maxFilesPerFolder, (limit) => {
+        if (import.meta.client) localStorage.setItem('max-files-per-folder', String(limit))
+    })
 
     const loadIndex = async () => {
         if (!isElectron) return
@@ -69,9 +78,20 @@ export const useFiles = () => {
 
     const addFolder = async () => {
         if (!isElectron) return null
-        const result = await window.electron.invoke('files:choose-and-index')
+        const result = await window.electron.invoke('files:choose-and-index', { maxFiles: maxFilesPerFolder.value })
         if (result) await loadIndex()
         return result
+    }
+
+    const removeIndexedFolder = async (folderPath: string) => {
+        if (!isElectron) throw new Error('Removing indexed folders is available in the desktop app')
+        await window.electron.invoke('folders:remove-from-index', folderPath)
+        if (folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) {
+            selectedFolder.value = null
+        }
+        await loadIndex()
+        searchResults.value = null
+        if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
     }
 
     const addTagToFile = async (fileId: number, tag: string) => {
@@ -113,9 +133,9 @@ export const useFiles = () => {
         await window.electron.invoke('files:show-in-folder', fileId)
     }
 
-    const deleteIndexedFile = async (fileId: number, mode: 'trash' | 'permanent') => {
-        if (!isElectron) throw new Error('Deleting indexed files is available in the desktop app')
-        await window.electron.invoke('files:delete', { fileId, mode })
+    const deleteIndexedFile = async (fileId: number) => {
+        if (!isElectron) throw new Error('Removing indexed files is available in the desktop app')
+        await window.electron.invoke('files:delete', { fileId })
         files.value = files.value.filter(file => file.id !== fileId)
         if (searchResults.value) searchResults.value = searchResults.value.filter(file => file.id !== fileId)
         if (activeFile.value?.id === fileId) activeFile.value = null
@@ -192,8 +212,8 @@ export const useFiles = () => {
     const getFileTypeCount = (extension: string) => files.value.filter(file => file.extension === extension).length
 
     return {
-        files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags,
+        files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder,
         activeFile, filteredFiles, selectFile, getFileTypeCount,
-        loadIndex, addFolder, addTagToFile, removeTagFromFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, searchIndexedFiles,
+        loadIndex, addFolder, removeIndexedFolder, addTagToFile, removeTagFromFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, searchIndexedFiles,
     }
 }

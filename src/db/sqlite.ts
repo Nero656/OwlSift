@@ -35,6 +35,8 @@ export interface DatabaseStatus {
     fts5Available: boolean;
 }
 
+export const MAX_FILES_PER_FOLDER = 1000;
+
 class DatabaseManager {
     private db: Database.Database | null = null;
     private dbPath: string | null = null;
@@ -65,17 +67,21 @@ class DatabaseManager {
     }
 
     /** Index a folder recursively. Text files are stored for FTS; other files remain searchable by name. */
-    public indexFolder(folderPath: string): { folderPath: string; indexedCount: number } {
+    public indexFolder(folderPath: string, requestedLimit = MAX_FILES_PER_FOLDER): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
         if (!this.db) throw new Error('SQLite is not initialized');
+        const limit = Math.max(1, Math.min(5000, Math.floor(requestedLimit) || MAX_FILES_PER_FOLDER));
 
         const textExtensions = new Set([
             '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
             '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
         ]);
         let indexedCount = 0;
+        let skippedCount = 0;
 
         const visit = (directory: string): void => {
-            for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+            const entries = fs.readdirSync(directory, { withFileTypes: true })
+                .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+            for (const entry of entries) {
                 const entryPath = path.join(directory, entry.name);
                 if (entry.isSymbolicLink()) continue;
                 if (entry.isDirectory()) {
@@ -83,6 +89,10 @@ class DatabaseManager {
                     continue;
                 }
                 if (!entry.isFile()) continue;
+                if (indexedCount >= limit) {
+                    skippedCount += 1;
+                    continue;
+                }
 
                 try {
                     const stat = fs.statSync(entryPath);
@@ -107,18 +117,41 @@ class DatabaseManager {
         };
 
         visit(folderPath);
+        const activePaths = (this.db.prepare('SELECT id, path FROM files WHERE is_deleted = 0').all() as Array<{ id: number; path: string }>)
+            .filter(({ path: filePath }) => {
+                const relative = path.relative(folderPath, filePath);
+                return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+            })
+            .sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
+        const capExcess = activePaths.slice(limit);
+        if (capExcess.length) {
+            const hideFile = this.db.prepare('UPDATE files SET is_deleted = 1 WHERE id = ?');
+            const hideExcess = this.db.transaction((ids: number[]) => {
+                for (const id of ids) hideFile.run(id);
+            });
+            hideExcess(capExcess.map(({ id }) => id));
+        }
         this.db.prepare(`
             INSERT INTO indexed_folders (path, name, indexed_count)
             VALUES (?, ?, ?)
             ON CONFLICT(path) DO UPDATE SET name = excluded.name, indexed_count = excluded.indexed_count
         `).run(folderPath, path.basename(folderPath), indexedCount);
-        return { folderPath, indexedCount };
+        return { folderPath, indexedCount, skippedCount, limit };
     }
 
     public listFolders(): Array<{ name: string; path: string; count: number }> {
         if (!this.db) return [];
-        return this.db.prepare('SELECT name, path, indexed_count AS count FROM indexed_folders ORDER BY name COLLATE NOCASE')
-            .all() as Array<{ name: string; path: string; count: number }>;
+        const folders = this.db.prepare('SELECT name, path FROM indexed_folders ORDER BY name COLLATE NOCASE')
+            .all() as Array<{ name: string; path: string }>;
+        const activePaths = (this.db.prepare('SELECT path FROM files WHERE is_deleted = 0').all() as Array<{ path: string }>)
+            .map(({ path: filePath }) => filePath);
+        return folders.map((folder) => ({
+            ...folder,
+            count: activePaths.filter((filePath) => {
+                const relative = path.relative(folder.path, filePath);
+                return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+            }).length,
+        }));
     }
 
     public listFiles(): IndexedFileRecord[] {
@@ -126,7 +159,7 @@ class DatabaseManager {
         const records = this.db.prepare(`
             SELECT id, path, name, extension, size, mtime,
               CASE WHEN content = '' THEN name ELSE substr(content, 1, 240) END AS snippet
-            FROM files ORDER BY name COLLATE NOCASE
+            FROM files WHERE is_deleted = 0 ORDER BY name COLLATE NOCASE
         `).all() as IndexedFileRecord[];
         return this.attachTags(records);
     }
@@ -140,18 +173,33 @@ class DatabaseManager {
 
     public removeFileRecord(fileId: number): void {
         if (!this.db || !Number.isInteger(fileId)) throw new Error('Invalid file id');
-        this.db.prepare('DELETE FROM files WHERE id = ?').run(fileId);
+        this.db.prepare('UPDATE files SET is_deleted = 1 WHERE id = ?').run(fileId);
+    }
 
-        const folders = this.db.prepare('SELECT path FROM indexed_folders').all() as Array<{ path: string }>;
-        const remainingPaths = (this.db.prepare('SELECT path FROM files').all() as Array<{ path: string }>).map(row => row.path);
-        const updateCount = this.db.prepare('UPDATE indexed_folders SET indexed_count = ? WHERE path = ?');
-        for (const folder of folders) {
-            const count = remainingPaths.filter(filePath => {
-                const relative = path.relative(folder.path, filePath);
-                return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-            }).length;
-            updateCount.run(count, folder.path);
-        }
+    /** Remove an indexed workspace and hide its files from LocalMind without touching disk. */
+    public removeFolderFromIndex(folderPath: string): void {
+        if (!this.db) throw new Error('SQLite is not initialized');
+        const indexedFolder = this.db.prepare('SELECT 1 FROM indexed_folders WHERE path = ?').get(folderPath);
+        if (!indexedFolder) throw new Error('Indexed folder not found');
+        const files = this.db.prepare('SELECT id, path FROM files').all() as Array<{ id: number; path: string }>;
+        const nestedIds = files.filter(({ path: filePath }) => {
+            const relative = path.relative(folderPath, filePath);
+            return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+        }).map(({ id }) => id);
+
+        const remove = this.db.transaction(() => {
+            const markDeleted = this.db!.prepare('UPDATE files SET is_deleted = 1 WHERE id = ?');
+            for (const id of nestedIds) markDeleted.run(id);
+            const indexedFolders = this.db!.prepare('SELECT path FROM indexed_folders').all() as Array<{ path: string }>;
+            const removeFolder = this.db!.prepare('DELETE FROM indexed_folders WHERE path = ?');
+            for (const indexed of indexedFolders) {
+                const relative = path.relative(folderPath, indexed.path);
+                if (relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative))) {
+                    removeFolder.run(indexed.path);
+                }
+            }
+        });
+        remove();
     }
 
     public addFileTag(fileId: number, rawTag: string): string[] {
@@ -229,7 +277,7 @@ class DatabaseManager {
         }
 
         try {
-            const { count } = this.db.prepare('SELECT COUNT(*) AS count FROM files').get() as { count: number };
+            const { count } = this.db.prepare('SELECT COUNT(*) AS count FROM files WHERE is_deleted = 0').get() as { count: number };
             const fts5Available = Boolean(this.db.prepare(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'"
             ).get());
@@ -259,7 +307,8 @@ class DatabaseManager {
         extension TEXT NOT NULL,
         size INTEGER NOT NULL,
         mtime INTEGER NOT NULL,
-        content TEXT NOT NULL DEFAULT ''
+        content TEXT NOT NULL DEFAULT '',
+        is_deleted INTEGER NOT NULL DEFAULT 0
       );
     `);
 
@@ -284,6 +333,9 @@ class DatabaseManager {
         const columns = this.db.prepare('PRAGMA table_info(files)').all() as Array<{ name: string }>;
         if (!columns.some((column) => column.name === 'content')) {
             this.db.exec("ALTER TABLE files ADD COLUMN content TEXT NOT NULL DEFAULT ''");
+        }
+        if (!columns.some((column) => column.name === 'is_deleted')) {
+            this.db.exec('ALTER TABLE files ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0');
         }
 
         // FTS5 виртуальная таблица для полнотекстового поиска по содержимому
@@ -334,6 +386,7 @@ class DatabaseManager {
           size = excluded.size,
           mtime = excluded.mtime,
           content = excluded.content;
+          is_deleted = 0;
       `);
             stmt.run(file);
         });
@@ -365,7 +418,7 @@ class DatabaseManager {
         snippet(files_fts, 1, '<mark>', '</mark>', '...', 15) AS snippet
       FROM files_fts
       JOIN files f ON f.id = files_fts.rowid
-      WHERE files_fts MATCH ?
+      WHERE files_fts MATCH ? AND f.is_deleted = 0
       ORDER BY rank
       LIMIT ?
     `);
@@ -382,7 +435,7 @@ class DatabaseManager {
             SELECT f.id, f.path, f.name, f.extension, f.size, f.mtime,
               CASE WHEN f.content = '' THEN f.name ELSE substr(f.content, 1, 240) END AS snippet
             FROM files f
-            WHERE EXISTS (
+            WHERE f.is_deleted = 0 AND EXISTS (
               SELECT 1 FROM file_tags t
               WHERE t.file_id = f.id AND (${terms.map(() => 'LOWER(t.tag) LIKE LOWER(?)').join(' OR ')})
             )

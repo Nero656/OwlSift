@@ -8,6 +8,8 @@ interface IndexedFileRecord {
   snippet: string
   tags: string[]
   note: string
+  tags: string[]
+  note: string
 }
 
 interface ElectronBridge {
@@ -18,11 +20,12 @@ interface ElectronBridge {
   invoke(channel: 'files:set-note', data: { fileId: number; note: string }): Promise<void>
   invoke(channel: 'files:open', fileId: number): Promise<void>
   invoke(channel: 'files:show-in-folder', fileId: number): Promise<void>
-  invoke(channel: 'files:delete', data: { fileId: number; mode: 'trash' | 'permanent' }): Promise<void>
+  invoke(channel: 'files:delete', data: { fileId: number }): Promise<void>
   invoke(channel: 'files:get-image-preview', fileId: number): Promise<string | null>
   invoke(channel: 'files:folders'): Promise<Array<{ name: string; path: string; count: number }>>
   invoke(channel: 'files:search', query: string): Promise<IndexedFileRecord[]>
-  invoke(channel: 'files:choose-and-index'): Promise<{ folderPath: string; indexedCount: number } | null>
+  invoke(channel: 'files:choose-and-index', data?: { maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>
+  invoke(channel: 'folders:remove-from-index', folderPath: string): Promise<void>
   invoke(channel: 'db:get-status'): Promise<{ connected: boolean; fileCount: number; sizeBytes: number; fts5Available: boolean }>
 }
 

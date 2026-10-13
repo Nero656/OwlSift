@@ -1,5 +1,6 @@
 <script setup lang="ts">
 const { language, setLanguage, t } = useLanguage()
+const { maxFilesPerFolder } = useFiles()
 const languageOptions = computed(() => [
   { value: 'ru' as const, label: t('russian') },
   { value: 'en' as const, label: t('english') },
@@ -30,6 +31,18 @@ const languageOptions = computed(() => [
             <Icon v-if="language === option.value" name="lucide:check" size="16" />
           </button>
         </div>
+      </section>
+
+      <section class="mt-5 rounded-2xl border border-gray-200 bg-white p-6 dark:border-gray-800 dark:bg-gray-900">
+        <label for="folder-file-limit" class="text-sm font-semibold text-gray-900 dark:text-gray-100">{{ t('folderLimitSetting') }}</label>
+        <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">{{ t('folderLimitSettingDescription') }}</p>
+        <select id="folder-file-limit" v-model.number="maxFilesPerFolder" class="mt-4 w-full max-w-xs rounded-xl border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm outline-none focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-800">
+          <option :value="100">100</option>
+          <option :value="500">500</option>
+          <option :value="1000">1,000</option>
+          <option :value="2500">2,500</option>
+          <option :value="5000">5,000</option>
+        </select>
       </section>
     </div>
   </div>
