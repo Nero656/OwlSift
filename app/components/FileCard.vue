@@ -12,7 +12,16 @@ const emit = defineEmits<{
   summary: [file: LocalFile]
 }>()
 
+const graphicExtensions = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'ico',
+  'tif', 'tiff', 'heic', 'heif', 'psd', 'ai', 'eps', 'raw', 'cr2', 'nef',
+])
+
 const icon = computed(() => {
+  if (graphicExtensions.has(props.file.extension.toLowerCase().replace(/^\./, ''))) {
+    return 'lucide:image'
+  }
+
   switch (props.file.extension) {
     case 'pdf':
       return 'lucide:file-text'
@@ -35,6 +44,10 @@ const icon = computed(() => {
 })
 
 const badgeClass = computed(() => {
+  if (graphicExtensions.has(props.file.extension.toLowerCase().replace(/^\./, ''))) {
+    return 'bg-purple-500/10 text-purple-500'
+  }
+
   switch (props.file.extension) {
     case 'pdf':
       return 'bg-red-500/10 text-red-500'

@@ -1,6 +1,25 @@
 <script setup lang="ts">
-const { files, searchQuery } = useFiles()
-const { t } = useLanguage()
+const { files, searchQuery, addFolder, searchIndexedFiles } = useFiles()
+const { t, language } = useLanguage()
+const isIndexing = ref(false)
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+
+watch(searchQuery, (query) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void searchIndexedFiles(query), 250)
+})
+
+const handleAddFolder = async () => {
+  if (isIndexing.value) return
+  isIndexing.value = true
+  try {
+    await addFolder()
+  } catch (error) {
+    console.error('Could not index selected folder:', error)
+  } finally {
+    isIndexing.value = false
+  }
+}
 
 const isDark = useState('dark-mode', () => true)
 
@@ -14,11 +33,6 @@ const toggleTheme = () => {
   }
 }
 
-const addFolder = () => {
-  // Пока заглушка.
-  // Позже здесь будет Electron IPC:
-  // window.electron?.selectFolder()
-}
 </script>
 
 <template>
@@ -115,10 +129,11 @@ const addFolder = () => {
                font-semibold text-white shadow-md
                transition hover:bg-emerald-500
                active:scale-95"
-          @click="addFolder"
+          :disabled="isIndexing"
+          @click="handleAddFolder"
       >
         <Icon name="lucide:folder-plus" size="16" />
-        <span>{{ t('addFolder') }}</span>
+        <span>{{ isIndexing ? (language === 'ru' ? 'Индексация…' : 'Indexing…') : t('addFolder') }}</span>
       </button>
 
       <button

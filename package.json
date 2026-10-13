@@ -2,12 +2,13 @@
   "name": "vue3app",
   "private": true,
   "version": "1.0.0",
-  "main": "src/main.ts",
+  "main": "dist/main.js",
   "scripts": {
     "dev": "nuxt dev",
+    "prebuild:electron": "node scripts/ensure-database.cjs",
     "build:electron": "tsc -p tsconfig.electron.json",
     "electron:dev": "npm run build:electron && electron dist/main.js --no-sandbox",
-    "electron:build": "electron-builder"
+    "electron:build": "npm run build:electron && electron-builder"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
@@ -23,5 +24,13 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
+  },
+  "build": {
+    "extraResources": [
+      {
+        "from": "database/localmind.db",
+        "to": "database/localmind.db"
+      }
+    ]
   }
 }
