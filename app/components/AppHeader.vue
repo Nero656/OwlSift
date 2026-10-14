@@ -1,6 +1,62 @@
 <script setup lang="ts">
-const { files, searchQuery } = useFiles()
-const { t } = useLanguage()
+const { files, searchQuery, addFolder, searchIndexedFiles } = useFiles()
+const { t, language } = useLanguage()
+const isIndexing = ref(false)
+const searchShortcut = ref('Ctrl+K')
+const searchInput = ref<HTMLInputElement | null>(null)
+const indexNotice = ref('')
+let usesMetaShortcut = false
+let searchTimer: ReturnType<typeof setTimeout> | undefined
+let indexNoticeTimer: ReturnType<typeof setTimeout> | undefined
+
+const handleSearchShortcut = (event: KeyboardEvent) => {
+  const modifierPressed = usesMetaShortcut ? event.metaKey : event.ctrlKey
+  if (!modifierPressed || event.altKey || event.key.toLowerCase() !== 'k') return
+
+  event.preventDefault()
+  searchInput.value?.focus()
+  searchInput.value?.select()
+}
+
+onMounted(() => {
+  const platform = window.electron?.platform ?? navigator.platform
+  usesMetaShortcut = platform.toLowerCase().includes('darwin') || platform.toLowerCase().includes('mac')
+  searchShortcut.value = usesMetaShortcut ? '⌘K' : 'Ctrl+K'
+  window.addEventListener('keydown', handleSearchShortcut)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleSearchShortcut)
+  if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+})
+
+watch(searchQuery, (query) => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => void searchIndexedFiles(query), 250)
+})
+
+const handleAddFolder = async () => {
+  if (isIndexing.value) return
+  isIndexing.value = true
+  indexNotice.value = ''
+  try {
+    const result = await addFolder()
+    if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+    if (result) {
+      indexNotice.value = result.indexedCount === 0
+        ? t('folderNoFilesIndexed')
+        : `${t('folderFilesIndexed')} ${result.indexedCount}${result.skippedCount ? `. ${t('folderLimitReached')} ${result.skippedCount}` : ''}`
+    }
+    if (indexNotice.value) indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
+  } catch (error) {
+    console.error('Could not index selected folder:', error)
+    indexNotice.value = t('folderIndexError')
+    if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+    indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
+  } finally {
+    isIndexing.value = false
+  }
+}
 
 const isDark = useState('dark-mode', () => true)
 
@@ -14,11 +70,6 @@ const toggleTheme = () => {
   }
 }
 
-const addFolder = () => {
-  // Пока заглушка.
-  // Позже здесь будет Electron IPC:
-  // window.electron?.selectFolder()
-}
 </script>
 
 <template>
@@ -72,6 +123,7 @@ const addFolder = () => {
         />
 
         <input
+            ref="searchInput"
             v-model="searchQuery"
             type="text"
             :placeholder="t('searchPlaceholder')"
@@ -91,7 +143,7 @@ const addFolder = () => {
                  text-[11px] font-medium text-gray-400
                  dark:border-gray-600 dark:bg-gray-700"
         >
-          ⌘K
+          {{ searchShortcut }}
         </span>
       </div>
     </div>
@@ -99,6 +151,7 @@ const addFolder = () => {
     <!-- Actions -->
 
     <div class="flex items-center gap-3">
+      <span v-if="indexNotice" class="max-w-56 text-xs text-amber-600 dark:text-amber-400" role="status">{{ indexNotice }}</span>
       <div
           class="hidden items-center gap-2 rounded-lg
                bg-gray-100 px-3 py-1.5 text-xs
@@ -115,10 +168,11 @@ const addFolder = () => {
                font-semibold text-white shadow-md
                transition hover:bg-emerald-500
                active:scale-95"
-          @click="addFolder"
+          :disabled="isIndexing"
+          @click="handleAddFolder"
       >
         <Icon name="lucide:folder-plus" size="16" />
-        <span>{{ t('addFolder') }}</span>
+        <span>{{ isIndexing ? (language === 'ru' ? 'Индексация…' : 'Indexing…') : t('addFolder') }}</span>
       </button>
 
       <button

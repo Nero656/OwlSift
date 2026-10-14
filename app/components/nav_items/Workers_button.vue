@@ -18,7 +18,7 @@ const emit = defineEmits<{
 
 <template>
   <NuxtLink
-      :to="`/folders/${encodeURIComponent(props.name)}`"
+      to="/"
       class="flex w-full items-center justify-between
            rounded-lg px-3.5 py-2 text-left
            text-xs transition-colors"
