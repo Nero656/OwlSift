@@ -1,9 +1,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const Database = require('better-sqlite3');
+const { DatabaseSync: Database } = require('node:sqlite');
 
-const databaseDirectory = path.join(__dirname, '..', 'database');
-const databasePath = path.join(databaseDirectory, 'localmind.db');
+const databasePath = process.env.LOCALMIND_DATABASE_PATH || path.join(__dirname, '..', 'database', 'localmind.db');
+const databaseDirectory = path.dirname(databasePath);
 fs.mkdirSync(databaseDirectory, { recursive: true });
 
 const db = new Database(databasePath);

@@ -3,6 +3,10 @@ import type { IndexedFileRecord } from '../db/sqlite';
 
 export interface IElectronAPI {
     platform: NodeJS.Platform;
+    getPathForFile(file: File): string;
+    invoke(channel: 'files:import-drop', data: { filePath: string; folderPath?: string; maxFiles: number }): Promise<string>;
+    invoke(channel: 'app:open-ai-doc', id: string): Promise<void>;
+    invoke(channel: 'app:open-donation'): Promise<void>;
     send: (channel: 'app:minimize' | 'app:maximize' | 'app:close', data?: unknown) => void;
     invoke(channel: 'app:get-version', data?: unknown): Promise<string>;
     invoke(channel: 'db:get-status', data?: unknown): Promise<DatabaseStatus>;
@@ -18,6 +22,10 @@ export interface IElectronAPI {
     invoke(channel: 'files:folders', data?: unknown): Promise<Array<{ name: string; path: string; count: number }>>;
     invoke(channel: 'files:search', data: string): Promise<IndexedFileRecord[]>;
     invoke(channel: 'files:choose-and-index', data?: { maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
+    invoke(channel: 'files:choose-and-index-file', data?: { folderPath?: string }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
+    invoke(channel: 'files:create-in-folder', data: { folderPath: string; fileName: string; content: string; bytes?: number[] }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number }>;
+    invoke(channel: 'files:get-bytes', data: number): Promise<number[]>;
+    invoke(channel: 'files:get-content', data: number): Promise<string>;
     invoke(channel: 'folders:remove-from-index', data: string): Promise<void>;
     on: (channel: 'app:message', callback: (data: unknown) => void) => () => void;
 }

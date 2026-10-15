@@ -10,12 +10,13 @@ interface DatabaseStatus {
 
 const status = ref<DatabaseStatus | null>(null)
 const { t } = useLanguage()
+const { files } = useFiles()
 const isElectron = typeof window !== 'undefined' && 'electron' in window
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 
-const connected = computed(() => status.value?.connected === true)
+const connected = computed(() => isElectron ? status.value?.connected === true : true)
 const stateLabel = computed(() => {
-  if (!isElectron) return t('sqliteUnavailable')
+  if (!isElectron) return t('browserStorage')
   if (!status.value) return t('sqliteChecking')
   return connected.value ? t('sqliteConnected') : t('sqliteDisconnected')
 })
@@ -51,7 +52,7 @@ onUnmounted(() => {
   <div class="border-t border-gray-200 p-3 dark:border-gray-800">
     <div class="rounded-xl border border-gray-200/50 bg-gray-100/80 p-3 dark:border-gray-700/50 dark:bg-gray-800/50">
       <div class="mb-1 flex items-center justify-between text-xs font-semibold">
-        <span>SQLite FTS5</span>
+        <span>{{ isElectron ? 'SQLite FTS5' : 'LocalMind' }}</span>
         <span
           class="text-[10px]"
           :class="connected ? 'text-emerald-500' : 'text-rose-500'"
@@ -63,12 +64,16 @@ onUnmounted(() => {
       </div>
 
       <p class="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
-        <template v-if="connected">
+        <template v-if="connected && isElectron">
           {{ status?.fileCount }} {{ t('indexedFiles') }} · {{ formattedSize }}<br>
           FTS5 {{ status?.fts5Available ? t('fts5Ready') : t('fts5Unavailable') }}
         </template>
+        <template v-else-if="connected && !isElectron">
+          {{ files.length }} {{ t('indexedFiles') }}<br>
+          {{ t('browserIndexReady') }}
+        </template>
         <template v-else-if="!isElectron">
-          {{ t('desktopOnly') }}
+          {{ t('browserIndexReady') }}
         </template>
         <template v-else-if="status">
           {{ t('dbUnavailable') }}

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-const { files, searchQuery, addFolder, searchIndexedFiles } = useFiles()
+const { files, searchQuery, addFolder, addOneFile, openCreateFileDialog, searchIndexedFiles } = useFiles()
 const { t, language } = useLanguage()
+const { settings, setTheme } = useSettings()
 const isIndexing = ref(false)
 const searchShortcut = ref('Ctrl+K')
 const searchInput = ref<HTMLInputElement | null>(null)
@@ -58,15 +59,26 @@ const handleAddFolder = async () => {
   }
 }
 
-const isDark = useState('dark-mode', () => true)
+const isDark = computed(() => settings.value.theme === 'dark')
+const toggleTheme = () => setTheme(isDark.value ? 'light' : 'dark')
+const isAddingFile = ref(false)
 
-const toggleTheme = () => {
-  isDark.value = !isDark.value
-
-  if (isDark.value) {
-    document.documentElement.classList.add('dark')
-  } else {
-    document.documentElement.classList.remove('dark')
+const handleAddFile = async () => {
+  if (isAddingFile.value) return
+  isAddingFile.value = true
+  indexNotice.value = ''
+  try {
+    const result = await addOneFile()
+    if (result) {
+      indexNotice.value = `${t('folderFilesIndexed')} ${result.indexedCount}`
+      if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+      indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 5000)
+    }
+  } catch (error) {
+    console.error('Could not add file:', error)
+    indexNotice.value = t('fileAddError')
+  } finally {
+    isAddingFile.value = false
   }
 }
 
@@ -173,6 +185,25 @@ const toggleTheme = () => {
       >
         <Icon name="lucide:folder-plus" size="16" />
         <span>{{ isIndexing ? (language === 'ru' ? 'Индексация…' : 'Indexing…') : t('addFolder') }}</span>
+      </button>
+
+      <button
+          type="button"
+          class="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+          :disabled="isAddingFile"
+          @click="handleAddFile"
+      >
+        <Icon name="lucide:file-plus" size="16" />
+        <span>{{ t('addFile') }}</span>
+      </button>
+
+      <button
+          type="button"
+          class="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+          @click="openCreateFileDialog()"
+      >
+        <Icon name="lucide:file-pen" size="16" />
+        <span>{{ t('createFile') }}</span>
       </button>
 
       <button

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron';
 import type { IElectronAPI } from './types/global';
 
 const allowedSendChannels = [
@@ -8,6 +8,9 @@ const allowedSendChannels = [
 ] as const;
 
 const allowedInvokeChannels = [
+    'app:open-donation',
+    'app:open-ai-doc',
+    'files:import-drop',
     'app:get-version',
     'db:get-status',
     'files:list',
@@ -22,6 +25,10 @@ const allowedInvokeChannels = [
     'files:folders',
     'files:search',
     'files:choose-and-index',
+    'files:choose-and-index-file',
+    'files:create-in-folder',
+    'files:get-content',
+    'files:get-bytes',
     'folders:remove-from-index'
 ] as const;
 
@@ -35,6 +42,7 @@ type OnChannel = typeof allowedOnChannels[number];
 
 const electronAPI: IElectronAPI = {
     platform: process.platform,
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
     send(channel: string, data?: unknown): void {
         if (allowedSendChannels.includes(channel as SendChannel)) {

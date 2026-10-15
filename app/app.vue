@@ -2,6 +2,7 @@
 import AppHeader from './components/AppHeader.vue'
 import Sidebar from './components/Sidebar.vue'
 import AiPanel from './components/AiPanel.vue'
+import CreateFileDialog from './components/CreateFileDialog.vue'
 
 const { loadIndex } = useFiles()
 const { t } = useLanguage()
@@ -38,6 +39,7 @@ onMounted(() => { void loadIndex() })
         </Transition>
       </div>
     </div>
+    <CreateFileDialog />
   </div>
 </template>
 

@@ -3,6 +3,8 @@ import FileCard from './FileCard.vue'
 const { t } = useLanguage()
 
 const {
+  files,
+  folders,
   filteredFiles,
   activeFile,
   selectFile,
@@ -12,10 +14,30 @@ const {
   selectedFolder,
   searchQuery,
   allTags,
+  openCreateFileDialog,
+  addOneFile,
 } = useFiles()
-const fileView = useState<'list' | 'grid'>('file-view', () => 'grid')
+const dropFolderPath = computed(() => folders.value.find(folder => folder.name === selectedFolder.value)?.path)
+const selectedIds = ref<number[]>([])
+const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
+const selectedDocuments = computed(() => files.value.filter(file => selectedIds.value.includes(file.id)))
+const toggleDocument = (file: { id: number }) => { selectedIds.value = selectedIds.value.includes(file.id) ? selectedIds.value.filter(id => id !== file.id) : [...selectedIds.value, file.id] }
+const selectPage = () => { selectedIds.value = [...new Set([...selectedIds.value, ...pagedFiles.value.map(file => file.id)])] }
+const analyzeSelection = async () => { attachedIds.value = selectedDocuments.value.map(file => file.id); await navigateTo('/ai_assistant') }
+watch(selectedFolder, () => { selectedIds.value = [] })
+watch(files, () => { const existing = new Set(files.value.map(file => file.id)); selectedIds.value = selectedIds.value.filter(id => existing.has(id)) })
+const { settings } = useSettings()
+const { summarize } = useAi()
+const rightTab = useState<'chat' | 'summary'>('ai-panel-tab', () => 'chat')
+const fileView = computed({
+  get: () => settings.value.fileView,
+  set: value => { settings.value.fileView = value },
+})
 const currentPage = ref(1)
-const pageSize = useState('file-page-size', () => 50)
+const pageSize = computed({
+  get: () => settings.value.pageSize,
+  set: value => { settings.value.pageSize = Number(value) },
+})
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredFiles.value.length / pageSize.value)))
 const pagedFiles = computed(() => filteredFiles.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
 const firstVisible = computed(() => filteredFiles.value.length ? (currentPage.value - 1) * pageSize.value + 1 : 0)
@@ -25,17 +47,23 @@ watch([searchQuery, selectedTag, selectedType, selectedFolder], () => { currentP
 watch(() => filteredFiles.value.length, () => { currentPage.value = 1 })
 watch(pageCount, count => { if (currentPage.value > count) currentPage.value = count })
 
-const openSummary = (file: any) => {
+const openSummary = async (file: any) => {
   selectFile(file)
-
-  // позже:
-  // useAiPanel().rightTab.value = 'summary'
+  rightTab.value = 'summary'
+  await summarize(file)
 }
 </script>
 
 <template>
-  <div class="flex-1 overflow-y-auto p-4">
-    <div class="mb-4 flex flex-wrap items-center justify-end gap-2">
+  <FileDropZone :folder-path="dropFolderPath" class="min-h-0 flex-1 overflow-y-auto p-4">
+    <div class="sticky top-0 z-20 mb-3 flex max-h-[35dvh] flex-col gap-3 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-sm dark:border-gray-700 dark:bg-gray-900">
+      <div class="flex flex-wrap items-center gap-2">
+      <span>{{ t('selectedDocuments') }} {{ selectedDocuments.length }}</span>
+      <button type="button" class="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700" :disabled="!pagedFiles.length" @click="selectPage">{{ t('selectPage') }}</button>
+      <button type="button" class="rounded-lg px-3 py-2 disabled:opacity-40" :disabled="!selectedIds.length" @click="selectedIds = []">{{ t('clearSelection') }}</button>
+      <button type="button" class="ml-auto rounded-lg bg-emerald-600 px-3 py-2 text-white disabled:opacity-40" :disabled="!selectedDocuments.length" @click="analyzeSelection">{{ t('analyzeSelection') }}</button>
+      </div>
+      <div class="flex flex-wrap items-center gap-3 border-t border-gray-200 pt-3 dark:border-gray-700">
       <div class="inline-flex rounded-lg border border-gray-200 p-1 dark:border-gray-700" role="group" :aria-label="t('search')">
         <button
           type="button"
@@ -59,21 +87,14 @@ const openSummary = (file: any) => {
 
       <label class="flex items-center gap-2 text-xs text-gray-500">
         <span>{{ t('sortLabel') }}</span>
-        <select v-model="sortBy" class="rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs text-gray-700 outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
-          <option value="relevance">{{ t('sortRelevance') }}</option>
-          <option value="date">{{ t('sortDate') }}</option>
-          <option value="name">{{ t('sortName') }}</option>
-          <option value="tag">{{ t('sortTag') }}</option>
-        </select>
+        <AppDropdown v-model="sortBy" :options="[{ value: 'relevance', label: t('sortRelevance') }, { value: 'date', label: t('sortDate') }, { value: 'name', label: t('sortName') }, { value: 'tag', label: t('sortTag') }]" />
       </label>
 
       <label class="flex items-center gap-2 text-xs text-gray-500">
         <span>{{ t('filterTag') }}</span>
-        <select v-model="selectedTag" class="max-w-40 rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs text-gray-700 outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200">
-          <option :value="null">{{ t('allTags') }}</option>
-          <option v-for="tag in allTags" :key="tag" :value="tag">#{{ tag }}</option>
-        </select>
+        <AppDropdown v-model="selectedTag" :options="[{ value: null, label: t('allTags') }, ...allTags.map(tag => ({ value: tag, label: '#' + tag }))]" class="max-w-40" />
       </label>
+      </div>
     </div>
 
     <div
@@ -94,6 +115,10 @@ const openSummary = (file: any) => {
       <p class="mt-1 text-xs text-gray-500">
         {{ t('adjustQuery') }}
       </p>
+      <div class="mt-4 flex gap-2">
+        <button type="button" class="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white" @click="openCreateFileDialog()">{{ t('createFile') }}</button>
+        <button type="button" class="rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 dark:border-gray-700 dark:text-gray-300" @click="addOneFile()">{{ t('addFile') }}</button>
+      </div>
     </div>
 
     <div v-else :class="fileView === 'grid' ? 'grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3' : 'flex flex-col gap-3'">
@@ -103,6 +128,9 @@ const openSummary = (file: any) => {
           :file="file"
           :layout="fileView"
           :active="activeFile?.id === file.id"
+          selectable
+          :selected="selectedIds.includes(file.id)"
+          @toggle="toggleDocument"
           @select="selectFile"
           @summary="openSummary"
       />
@@ -113,11 +141,7 @@ const openSummary = (file: any) => {
         <span>{{ t('showingFiles') }} {{ firstVisible }}–{{ lastVisible }} {{ t('ofFiles') }} {{ filteredFiles.length }}</span>
         <label class="flex items-center gap-1.5">
           <span>{{ t('perPage') }}</span>
-          <select v-model.number="pageSize" class="rounded-lg border border-gray-200 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-800">
-            <option :value="25">25</option>
-            <option :value="50">50</option>
-            <option :value="100">100</option>
-          </select>
+          <AppDropdown v-model="pageSize" :options="[25, 50, 100].map(value => ({ value, label: String(value) }))" />
         </label>
       </div>
       <div class="flex items-center gap-2">
@@ -127,5 +151,5 @@ const openSummary = (file: any) => {
       </div>
     </footer>
 
-  </div>
+  </FileDropZone>
 </template>

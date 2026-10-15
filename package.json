@@ -6,8 +6,8 @@
   "main": "electron-dist/main.js",
   "scripts": {
     "dev": "nuxt dev",
-    "generate": "nuxt generate",
-    "prebuild:electron": "node scripts/ensure-database.cjs",
+    "generate": "nuxt generate && node scripts/prepare-static-assets.cjs",
+    "prebuild:electron": "node scripts/ensure-release-database.cjs",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/prepare-electron-build.cjs",
     "electron:dev": "npm run build:electron && electron dist/main.js --no-sandbox",
     "electron:build": "npm run generate && npm run build:electron && electron-builder --publish never"
@@ -26,7 +26,11 @@
     "vue-tsc": "^2.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "@pdf-lib/fontkit": "^1.1.1",
+    "better-sqlite3": "^13.0.3",
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299"
   },
   "build": {
     "appId": "com.localmind.desktop",
@@ -40,21 +44,28 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-${version}-win-${arch}-setup.${ext}"
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     },
     "extraResources": [
       {
-        "from": "database/localmind.db",
+        "from": "build-resources/localmind.db",
         "to": "database/localmind.db"
       },
       {
@@ -62,5 +73,7 @@
         "to": "app"
       }
     ]
-  }
+  },
+  "description": "Local document workspace with AI analysis",
+  "author": "Nero656"
 }
