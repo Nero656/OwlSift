@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'path';
+import fs from 'node:fs';
 import { dbManager } from './db/sqlite';
 
 app.commandLine.appendSwitch('ozone-platform', 'x11');
@@ -27,6 +28,18 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+    ipcMain.handle('app:open-ai-doc', (_event, id: string) => {
+        const docs: Record<string, string> = {
+            lmServer: 'https://lmstudio.ai/docs/developer/core/server/settings',
+            lmCompat: 'https://lmstudio.ai/docs/developer/openai-compat',
+            openaiStart: 'https://developers.openai.com/api/docs/quickstart',
+            openaiKeys: 'https://platform.openai.com/api-keys',
+            openaiErrors: 'https://developers.openai.com/api/docs/guides/error-codes',
+        };
+        if (!Object.hasOwn(docs, id)) throw new Error('Unknown documentation link');
+        return shell.openExternal(docs[id]);
+    });
+    ipcMain.handle('app:open-donation', () => shell.openExternal('https://www.donationalerts.com/r/nero_656'));
     try {
         dbManager.init();
     } catch (error) {
@@ -54,6 +67,47 @@ app.whenReady().then(() => {
         });
         if (result.canceled || !result.filePaths[0]) return null;
         return dbManager.indexFolder(result.filePaths[0], data.maxFiles);
+    });
+    ipcMain.handle('files:import-drop', (_event, data: { filePath: string; folderPath?: string; maxFiles: number }) => {
+        if (!path.isAbsolute(data.filePath) || !fs.statSync(data.filePath).isFile()) throw new Error('Invalid file');
+        let target = data.filePath;
+        if (data.folderPath) {
+            const folder = dbManager.listFolders().find(folder => folder.path === data.folderPath);
+            if (!folder || !fs.statSync(folder.path).isDirectory()) throw new Error('Folder not found');
+            const limit = Math.max(1, Math.min(5000, Number(data.maxFiles) || 1000));
+            if (folder.count >= limit) throw new Error('Folder limit reached');
+            target = path.join(folder.path, path.basename(data.filePath));
+            if (path.resolve(target) !== path.resolve(data.filePath)) {
+                const ext = path.extname(target), base = path.basename(target, ext);
+                let suffix = 1;
+                while (fs.existsSync(target)) target = path.join(folder.path, base + ' (' + suffix++ + ')' + ext);
+                fs.copyFileSync(data.filePath, target, fs.constants.COPYFILE_EXCL);
+            }
+        }
+        dbManager.indexSingleFile(target, data.folderPath);
+        return target;
+    });
+    ipcMain.handle('files:choose-and-index-file', async (_event, data: { folderPath?: string } = {}) => {
+        const result = await dialog.showOpenDialog(win!, {
+            properties: ['openFile'],
+            defaultPath: data.folderPath,
+        });
+        if (result.canceled || !result.filePaths[0]) return null;
+        return dbManager.indexSingleFile(result.filePaths[0], data.folderPath);
+    });
+    ipcMain.handle('files:create-in-folder', (_event, data: { folderPath: string; fileName: string; content: string; bytes?: number[] }) => {
+        return dbManager.createFileInFolder(data.folderPath, data.fileName, data.content ?? '', data.bytes ? Buffer.from(data.bytes) : undefined);
+    });
+    ipcMain.handle('files:get-bytes', (_event, fileId: number) => Array.from(fs.readFileSync(dbManager.getFilePath(fileId))));
+    ipcMain.handle('files:get-content', (_event, fileId: number) => dbManager.getFileContent(fileId));
+    ipcMain.handle('files:add-tag', (_event, data: { fileId: number; tag: string }) => dbManager.addFileTag(data.fileId, data.tag));
+    ipcMain.handle('files:remove-tag', (_event, data: { fileId: number; tag: string }) => dbManager.removeFileTag(data.fileId, data.tag));
+    ipcMain.handle('files:set-note', (_event, data: { fileId: number; note: string }) => dbManager.setFileNote(data.fileId, data.note));
+    ipcMain.handle('files:delete-from-disk', async (_event, data: { fileId: number; mode: 'trash' | 'permanent' }) => {
+        const filePath = dbManager.getFilePath(data.fileId);
+        if (data.mode === 'permanent') fs.unlinkSync(filePath);
+        else await shell.trashItem(filePath);
+        dbManager.removeFileRecord(data.fileId);
     });
     ipcMain.handle('folders:remove-from-index', (_event, folderPath: string) => dbManager.removeFolderFromIndex(folderPath));
 

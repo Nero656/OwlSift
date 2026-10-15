@@ -105,6 +105,66 @@ class DatabaseManager {
         `).run(folderPath, node_path_1.default.basename(folderPath), indexedCount);
         return { folderPath, indexedCount, skippedCount, limit };
     }
+    readTextExtensions() {
+        return new Set([
+            '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
+            '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
+        ]);
+    }
+    rememberFolder(folderPath) {
+        if (!this.db)
+            return;
+        this.db.prepare(`
+            INSERT INTO indexed_folders (path, name, indexed_count)
+            VALUES (?, ?, 0)
+            ON CONFLICT(path) DO NOTHING
+        `).run(folderPath, node_path_1.default.basename(folderPath));
+        const count = this.listFolders().find((folder) => folder.path === folderPath)?.count ?? 0;
+        this.db.prepare('UPDATE indexed_folders SET indexed_count = ? WHERE path = ?').run(count, folderPath);
+    }
+    indexSingleFile(filePath, folderPath) {
+        if (!this.db)
+            throw new Error('SQLite is not initialized');
+        if (!node_fs_1.default.existsSync(filePath) || !node_fs_1.default.statSync(filePath).isFile())
+            throw new Error('File not found');
+        const stat = node_fs_1.default.statSync(filePath);
+        const name = node_path_1.default.basename(filePath);
+        const extension = node_path_1.default.extname(name).toLowerCase().replace(/^\./, '');
+        let content = '';
+        if (this.readTextExtensions().has(`.${extension}`) && stat.size <= 2 * 1024 * 1024) {
+            content = node_fs_1.default.readFileSync(filePath, 'utf8');
+        }
+        this.saveFile({
+            path: filePath,
+            name,
+            extension,
+            size: stat.size,
+            mtime: Math.floor(stat.mtimeMs),
+            content,
+        });
+        const workspace = folderPath && node_fs_1.default.existsSync(folderPath) ? folderPath : node_path_1.default.dirname(filePath);
+        this.rememberFolder(workspace);
+        return { folderPath: workspace, indexedCount: 1, skippedCount: 0, limit: 1 };
+    }
+    createFileInFolder(folderPath, fileName, content, bytes) {
+        if (!this.db)
+            throw new Error('SQLite is not initialized');
+        if (!folderPath || !node_fs_1.default.existsSync(folderPath) || !node_fs_1.default.statSync(folderPath).isDirectory()) {
+            throw new Error('Folder not found');
+        }
+        const safeName = node_path_1.default.basename((fileName || 'untitled.txt').replace(/[\\/:*?"<>|]/g, '-'));
+        const filePath = node_path_1.default.join(folderPath, safeName);
+        node_fs_1.default.writeFileSync(filePath, bytes ?? content ?? '', { flag: 'wx' });
+        const result = this.indexSingleFile(filePath, folderPath);
+        this.saveFile({ path: filePath, name: safeName, extension: node_path_1.default.extname(safeName).slice(1), size: node_fs_1.default.statSync(filePath).size, mtime: Date.now(), content });
+        return result;
+    }
+    getFileContent(fileId) {
+        if (!this.db || !Number.isInteger(fileId))
+            return '';
+        const file = this.db.prepare('SELECT content FROM files WHERE id = ? AND is_deleted = 0').get(fileId);
+        return file?.content ?? '';
+    }
     listFolders() {
         if (!this.db)
             return [];

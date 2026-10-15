@@ -1,12 +1,24 @@
 <script setup lang="ts">
 import type { IndexedFolder } from '~/types/file'
 
-const { folders, selectedFolder, removeIndexedFolder, maxFilesPerFolder } = useFiles()
+const { folders, selectedFolder, removeIndexedFolder, maxFilesPerFolder, addOneFile, openCreateFileDialog } = useFiles()
 const { t } = useLanguage()
 const folderView = useState<'list' | 'grid'>('folder-view', () => 'grid')
 const folderToRemove = ref<IndexedFolder | null>(null)
 const removeError = ref('')
 const isRemoving = ref(false)
+const fileActionNotice = ref('')
+
+const addFileToFolder = async (folderPath: string) => {
+  fileActionNotice.value = ''
+  try {
+    const result = await addOneFile(folderPath)
+    if (result) fileActionNotice.value = `${t('folderFilesIndexed')} ${result.indexedCount}`
+  } catch (error) {
+    console.error('Could not add file to folder:', error)
+    fileActionNotice.value = t('fileAddError')
+  }
+}
 
 const openFolder = async (folderName: string) => {
   selectedFolder.value = folderName
@@ -30,10 +42,11 @@ const confirmRemoveFolder = async () => {
 </script>
 
 <template>
-  <section class="flex-1 overflow-y-auto p-5 md:p-7">
+  <section class="flex-1 overflow-y-auto p-5 md:p-7" @dragover.prevent @drop.prevent.stop>
     <header class="mb-5 flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">{{ t('workspaces') }}</h1>
       <p class="mr-auto basis-full text-xs text-gray-500">{{ t('folderIndexLimit') }} <strong class="font-semibold text-gray-700 dark:text-gray-300">{{ maxFilesPerFolder }}</strong></p>
+      <p v-if="fileActionNotice" class="basis-full text-xs text-emerald-600">{{ fileActionNotice }}</p>
       <div class="inline-flex rounded-lg border border-gray-200 p-1 dark:border-gray-700" role="group" :aria-label="t('workspaces')">
         <button
           type="button"
@@ -57,10 +70,10 @@ const confirmRemoveFolder = async () => {
     </header>
 
     <div v-if="folders.length" :class="folderView === 'grid' ? 'grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3' : 'flex flex-col gap-2'">
-      <article
+      <FileDropZone tag="article" :folder-path="folder.path"
         v-for="folder in folders"
         :key="folder.path"
-        class="flex min-w-0 items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-800/50"
+        class="workspace-card flex min-w-0 items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-800/50"
         :class="folderView === 'list' ? 'w-full' : 'flex-col items-start'"
       >
         <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500">
@@ -71,12 +84,22 @@ const confirmRemoveFolder = async () => {
           <p class="mt-1 truncate font-mono text-[11px] text-gray-400">{{ folder.path }}</p>
           <p class="mt-2 text-xs text-gray-500">{{ folder.count }} {{ t('files') }}</p>
         </div>
-        <div class="flex shrink-0 items-center gap-2" :class="folderView === 'grid' ? 'w-full' : ''">
+        <div class="workspace-card-actions flex min-w-0 shrink-0 flex-wrap items-center gap-2" :class="folderView === 'grid' ? 'w-full' : ''">
           <button
             type="button"
             class="flex-1 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400"
             @click="openFolder(folder.name)"
           >{{ t('openFolder') }}</button>
+          <button
+            type="button"
+            class="rounded-lg bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
+            @click="addFileToFolder(folder.path)"
+          >{{ t('addFileToFolder') }}</button>
+          <button
+            type="button"
+            class="rounded-lg bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
+            @click="openCreateFileDialog(folder.path)"
+          >{{ t('createFile') }}</button>
           <button
             type="button"
             class="rounded-lg p-2 text-gray-500 transition hover:bg-rose-500/10 hover:text-rose-600 dark:text-gray-400"
@@ -85,7 +108,7 @@ const confirmRemoveFolder = async () => {
             @click="folderToRemove = folder; removeError = ''"
           ><Icon name="lucide:trash-2" size="15" /></button>
         </div>
-      </article>
+      </FileDropZone>
     </div>
 
     <div v-else class="flex min-h-64 flex-col items-center justify-center text-center">
@@ -109,3 +132,11 @@ const confirmRemoveFolder = async () => {
     </div>
   </Teleport>
 </template>
+
+<style scoped>
+@media (max-width: 600px) {
+  .workspace-card { flex-wrap: wrap; }
+  .workspace-card-actions { width: 100%; flex: 1 1 100%; }
+  .workspace-card-actions button { min-width: 0; overflow-wrap: anywhere; }
+}
+</style>

@@ -11,7 +11,11 @@ const {
 
 const route = useRoute()
 const { t } = useLanguage()
-const isCompact = useState('sidebar-compact', () => false)
+const { settings } = useSettings()
+const isCompact = computed({
+  get: () => settings.value.compactSidebar,
+  set: value => { settings.value.compactSidebar = value },
+})
 
 const isActive = (item: { id: string; route: string }) => {
   if (item.id === 'search') {
@@ -114,6 +118,7 @@ const navItems = computed(() => [
 
     <div>
       <Sqlite_status v-if="!isCompact" />
+      <SupportDeveloper :compact="isCompact" />
       <div class="flex p-2" :class="isCompact ? 'justify-center border-t border-gray-200 dark:border-gray-800' : 'justify-end'">
         <button
           type="button"

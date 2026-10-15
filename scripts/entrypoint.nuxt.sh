@@ -132,9 +132,6 @@ VUE
 fi
 
 # ─── 7. Установка зависимостей ──────────────────────────────────
-if [ ! -x "node_modules/.bin/nuxt" ]; then
-  echo "→ Устанавливаем зависимости..."
-  npm install
-fi
+node /app/scripts/sync-dependencies.cjs nuxt
 
 exec npm run dev -- --host 0.0.0.0

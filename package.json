@@ -26,7 +26,11 @@
     "vue-tsc": "^2.0.0"
   },
   "dependencies": {
-    "better-sqlite3": "^13.0.3"
+    "@pdf-lib/fontkit": "^1.1.1",
+    "better-sqlite3": "^13.0.3",
+    "fflate": "^0.8.3",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299"
   },
   "build": {
     "appId": "com.localmind.desktop",
@@ -40,17 +44,23 @@
       "package.json"
     ],
     "win": {
-      "target": ["nsis"]
+      "target": [
+        "nsis"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
     "mac": {
-      "target": ["dmg"]
+      "target": [
+        "dmg"
+      ]
     },
     "linux": {
-      "target": ["AppImage"]
+      "target": [
+        "AppImage"
+      ]
     },
     "extraResources": [
       {

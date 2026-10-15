@@ -7,6 +7,8 @@ const allowedSendChannels = [
     'app:close'
 ];
 const allowedInvokeChannels = [
+    'app:open-donation',
+    'files:import-drop',
     'app:get-version',
     'db:get-status',
     'files:list',
@@ -21,6 +23,10 @@ const allowedInvokeChannels = [
     'files:folders',
     'files:search',
     'files:choose-and-index',
+    'files:choose-and-index-file',
+    'files:create-in-folder',
+    'files:get-content',
+    'files:get-bytes',
     'folders:remove-from-index'
 ];
 const allowedOnChannels = [
@@ -28,6 +34,7 @@ const allowedOnChannels = [
 ];
 const electronAPI = {
     platform: process.platform,
+    getPathForFile: (file) => electron_1.webUtils.getPathForFile(file),
     send(channel, data) {
         if (allowedSendChannels.includes(channel)) {
             electron_1.ipcRenderer.send(channel, data);

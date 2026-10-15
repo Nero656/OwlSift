@@ -139,6 +139,66 @@ class DatabaseManager {
         return { folderPath, indexedCount, skippedCount, limit };
     }
 
+    private readTextExtensions() {
+        return new Set([
+            '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
+            '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
+        ]);
+    }
+
+    private rememberFolder(folderPath: string): void {
+        if (!this.db) return;
+        this.db.prepare(`
+            INSERT INTO indexed_folders (path, name, indexed_count)
+            VALUES (?, ?, 0)
+            ON CONFLICT(path) DO NOTHING
+        `).run(folderPath, path.basename(folderPath));
+        const count = this.listFolders().find((folder) => folder.path === folderPath)?.count ?? 0;
+        this.db.prepare('UPDATE indexed_folders SET indexed_count = ? WHERE path = ?').run(count, folderPath);
+    }
+
+    public indexSingleFile(filePath: string, folderPath?: string): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
+        if (!this.db) throw new Error('SQLite is not initialized');
+        if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error('File not found');
+        const stat = fs.statSync(filePath);
+        const name = path.basename(filePath);
+        const extension = path.extname(name).toLowerCase().replace(/^\./, '');
+        let content = '';
+        if (this.readTextExtensions().has(`.${extension}`) && stat.size <= 2 * 1024 * 1024) {
+            content = fs.readFileSync(filePath, 'utf8');
+        }
+        this.saveFile({
+            path: filePath,
+            name,
+            extension,
+            size: stat.size,
+            mtime: Math.floor(stat.mtimeMs),
+            content,
+        });
+        const workspace = folderPath && fs.existsSync(folderPath) ? folderPath : path.dirname(filePath);
+        this.rememberFolder(workspace);
+        return { folderPath: workspace, indexedCount: 1, skippedCount: 0, limit: 1 };
+    }
+
+    public createFileInFolder(folderPath: string, fileName: string, content: string, bytes?: Buffer): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
+        if (!this.db) throw new Error('SQLite is not initialized');
+        if (!folderPath || !fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
+            throw new Error('Folder not found');
+        }
+        const safeName = path.basename((fileName || 'untitled.txt').replace(/[\\/:*?"<>|]/g, '-'));
+        const filePath = path.join(folderPath, safeName);
+        fs.writeFileSync(filePath, bytes ?? content ?? '', { flag: 'wx' });
+        const result = this.indexSingleFile(filePath, folderPath);
+        this.saveFile({ path: filePath, name: safeName, extension: path.extname(safeName).slice(1), size: fs.statSync(filePath).size, mtime: Date.now(), content });
+        return result;
+    }
+
+    public getFileContent(fileId: number): string {
+        if (!this.db || !Number.isInteger(fileId)) return '';
+        const file = this.db.prepare('SELECT content FROM files WHERE id = ? AND is_deleted = 0').get(fileId) as { content?: string } | undefined;
+        return file?.content ?? '';
+    }
+
     public listFolders(): Array<{ name: string; path: string; count: number }> {
         if (!this.db) return [];
         const folders = this.db.prepare('SELECT name, path FROM indexed_folders ORDER BY name COLLATE NOCASE')

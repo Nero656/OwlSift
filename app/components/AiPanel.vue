@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import type { LocalFile } from '~/types/file'
 
 const { activeFile, addTagToFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk } = useFiles()
 const showFilePreview = useState('show-file-preview', () => true)
@@ -7,14 +6,26 @@ const showFilePreview = useState('show-file-preview', () => true)
 const {
   messages,
   isThinking,
+  generationFeedback,
+  lastQuestion,
+  lastError,
+  availableModels,
+  connectionStatus,
+  activeModelConfig,
+  isModelEnabled,
+  testConnection,
   ask,
-  clear
-} = useAi()
-const { t, language } = useLanguage()
+  summarize,
+  cancel,
+  repeatLast,
+  clear,
+} = useAi(activeFile)
+const { t } = useLanguage()
+const { settings } = useSettings()
 const imagePreview = ref<string | null>(null)
 let imagePreviewRequest = 0
 
-const rightTab = ref<'chat' | 'summary'>('chat')
+const rightTab = useState<'chat' | 'summary'>('ai-panel-tab', () => 'chat')
 const isTagInputOpen = ref(false)
 const newTag = ref('')
 const tagError = ref('')
@@ -25,6 +36,21 @@ const deleteDialogAction = ref<'index' | 'disk'>('index')
 const deleteMode = ref<'trash' | 'permanent'>('trash')
 
 const userQuery = ref('')
+const outputFolder = ref<string | null>(null)
+const isModelConnecting = ref(false)
+const selectedChatModel = computed({
+  get: () => activeModelConfig.value.model,
+  set: value => { activeModelConfig.value.model = value },
+})
+
+const connectChatModel = async () => {
+  if (!isModelEnabled.value || !activeModelConfig.value.endpoint.trim() || isModelConnecting.value) return
+  isModelConnecting.value = true
+  try { await testConnection() } catch { /* The composable exposes the error. */ }
+  finally { isModelConnecting.value = false }
+}
+
+onMounted(() => { void connectChatModel() })
 let noteSaveTimer: ReturnType<typeof setTimeout> | undefined
 let pendingNoteSave: { fileId: number; note: string } | undefined
 
@@ -61,6 +87,7 @@ watch(() => activeFile.value?.id, async (fileId) => {
   if (!fileId || !extension || !['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'].includes(extension)) return
 
   try {
+    if (!window.electron) return
     const preview = await window.electron.invoke('files:get-image-preview', fileId)
     if (request === imagePreviewRequest) imagePreview.value = preview
   } catch (error) {
@@ -86,15 +113,15 @@ const handleSubmit = async () => {
 
   userQuery.value = ''
 
-  await ask(
-      activeFile.value,
-      query
-  )
+  await ask(query, activeFile.value, outputFolder.value ?? undefined)
 }
 
-const openSummary = (file: LocalFile) => {
-  activeFile.value = file
-  rightTab.value = 'summary'
+const regenerateSummary = async () => {
+  if (activeFile.value) await summarize(activeFile.value)
+}
+
+const askAgain = async () => {
+  await repeatLast(activeFile.value, outputFolder.value ?? undefined)
 }
 
 const addTag = () => {
@@ -157,7 +184,7 @@ const confirmDeleteFile = async () => {
 </script>
 
 <template>
-  <aside
+  <aside @dragover.prevent @drop.prevent.stop
       class="flex h-full min-h-0 w-96 shrink-0 flex-col
            overflow-hidden border-l border-gray-200
            bg-white/70 backdrop-blur-md
@@ -303,6 +330,19 @@ const confirmDeleteFile = async () => {
       </button>
     </div>
 
+      <div class="flex shrink-0 items-center gap-2 border-b border-gray-200 p-2 dark:border-gray-800">
+        <label v-if="connectionStatus === 'ok'" class="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-gray-500">
+          <span class="shrink-0">{{ t('chatModel') }}</span>
+          <AppDropdown v-model="selectedChatModel" :options="availableModels.map(value => ({ value, label: value }))" :placeholder="availableModels.length ? t('selectModel') : t('noModelsFound')" :disabled="availableModels.length === 0" class="min-w-0 flex-1" />
+        </label>
+        <button v-else type="button" class="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800" :disabled="!isModelEnabled || isModelConnecting" @click="connectChatModel">
+          {{ isModelConnecting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection')) }}
+        </button>
+      </div>
+
+
+    <div class="shrink-0 px-2 py-1"><AiOutputSettings v-model="outputFolder" /></div>
+
     <!-- CHAT -->
 
     <div
@@ -383,34 +423,18 @@ const confirmDeleteFile = async () => {
                 size="12"
             />
 
-            {{ language === 'ru' ? 'Локальная языковая модель (Ollama)' : 'Local LLM (Ollama)' }}
+            {{ settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
           </div>
 
           <p class="whitespace-pre-line">
             {{ message.text }}
           </p>
+          <AiCreatedFiles :files="message.createdFiles ?? []" />
         </div>
 
         <!-- Thinking -->
 
-        <div
-            v-if="isThinking"
-            class="mr-auto flex items-center gap-2
-                 rounded-xl rounded-bl-none
-                 bg-gray-100 p-3 text-xs
-                 text-gray-500
-                 dark:bg-gray-800"
-        >
-          <Icon
-              name="lucide:loader-2"
-              size="16"
-              class="animate-spin text-emerald-500"
-          />
-
-          <span>
-            {{ t('analyzing') }}
-          </span>
-        </div>
+        <AiGenerationFeedback v-if="isThinking && generationFeedback" :feedback="generationFeedback" />
 
       </div>
 
@@ -421,8 +445,28 @@ const confirmDeleteFile = async () => {
                p-3 dark:border-gray-800
                dark:bg-gray-900"
       >
+        <div v-if="isThinking || lastQuestion" class="mb-2 flex justify-end gap-2">
+          <button
+              v-if="lastQuestion && !isThinking"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              @click="askAgain"
+          >
+            <Icon name="lucide:rotate-ccw" size="13" />
+            {{ t('askAgain') }}
+          </button>
+          <button
+              v-if="isThinking"
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-2.5 py-1.5 text-[11px] font-medium text-rose-600 transition hover:bg-rose-500/20 dark:text-rose-400"
+              @click="cancel"
+          >
+            <Icon name="lucide:square" size="12" />
+            {{ t('cancelRequest') }}
+          </button>
+        </div>
         <form
-            class="relative"
+            class="flex w-full items-stretch gap-2"
             @submit.prevent="handleSubmit"
         >
           <input
@@ -437,9 +481,9 @@ const confirmDeleteFile = async () => {
               !activeFile ||
               isThinking
             "
-              class="w-full rounded-xl border
+              class="h-10 min-w-0 flex-1 rounded-xl border
                    border-transparent
-                   bg-gray-100 py-2.5 pl-3 pr-10
+                   bg-gray-100 px-3
                    text-xs outline-none
                    transition
                    focus:border-emerald-500
@@ -454,9 +498,9 @@ const confirmDeleteFile = async () => {
               !activeFile ||
               isThinking
             "
-              class="absolute right-2 top-1/2
-                   -translate-y-1/2 rounded-lg
-                   bg-emerald-500 p-1.5
+              class="flex h-10 w-10 shrink-0
+                   items-center justify-center rounded-xl
+                   bg-emerald-500
                    text-white transition
                    hover:bg-emerald-600
                    disabled:opacity-40"
@@ -497,10 +541,30 @@ const confirmDeleteFile = async () => {
                    dark:bg-gray-800/50
                    dark:text-gray-300"
           >
-            {{
-              activeFile.summary ||
-              t('generateSummary')
-            }}
+
+            <AiGenerationFeedback v-if="isThinking && generationFeedback" :feedback="generationFeedback" />
+            <p v-else class="whitespace-pre-wrap">{{ activeFile.summary || t('generateSummary') }}</p>
+            <p v-if="lastError && !isThinking" class="mt-2 text-rose-500">{{ lastError }}</p>
+            <div class="mt-3 flex flex-wrap gap-2">
+              <button
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1.5 font-medium text-emerald-600 transition hover:bg-emerald-500/20 disabled:opacity-40 dark:text-emerald-400"
+                  :disabled="isThinking"
+                  @click="regenerateSummary"
+              >
+                <Icon name="lucide:sparkles" size="13" />
+                {{ activeFile.summary ? t('regenerateSummary') : t('aiSummary') }}
+              </button>
+              <button
+                  v-if="isThinking"
+                  type="button"
+                  class="inline-flex items-center gap-1.5 rounded-lg bg-rose-500/10 px-2.5 py-1.5 font-medium text-rose-600 transition hover:bg-rose-500/20 dark:text-rose-400"
+                  @click="cancel"
+              >
+                <Icon name="lucide:square" size="12" />
+                {{ t('cancelRequest') }}
+              </button>
+            </div>
           </div>
         </section>
 
@@ -630,10 +694,7 @@ const confirmDeleteFile = async () => {
             <template v-if="deleteDialogAction === 'disk'">
               <p class="mt-1 text-xs text-gray-500">{{ t('deleteDialogMessage') }}</p>
               <label class="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">{{ t('deleteMode') }}
-                <select v-model="deleteMode" class="mt-1 block w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs dark:border-gray-700 dark:bg-gray-800">
-                  <option value="trash">{{ t('moveToTrash') }}</option>
-                  <option value="permanent">{{ t('deletePermanently') }}</option>
-                </select>
+                <AppDropdown v-model="deleteMode" :options="[{ value: 'trash', label: t('moveToTrash') }, { value: 'permanent', label: t('deletePermanently') }]" class="mt-1 w-full" />
               </label>
               <p v-if="deleteMode === 'permanent'" class="mt-2 text-xs text-rose-500">{{ t('permanentDeleteWarning') }}</p>
             </template>

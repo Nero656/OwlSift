@@ -10,6 +10,9 @@ export interface LocalFile {
     snippet: string
     summary: string
     note: string
+    content?: string
+    contentError?: string
+    thumbnail?: string
 }
 
 export interface IndexedFolder {
@@ -21,4 +24,5 @@ export interface IndexedFolder {
 export interface ChatMessage {
     sender: 'user' | 'ai'
     text: string
+    createdFiles?: Array<{ id: number; name: string }>
 }
