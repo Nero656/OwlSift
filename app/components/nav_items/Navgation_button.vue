@@ -26,8 +26,8 @@ const props = withDefaults(defineProps<Props>(), {
       :class="[
         props.compact ? 'justify-center px-2' : 'justify-between px-3.5',
         props.active
-          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
-          : 'text-gray-600 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/60'
+          ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400'
+          : 'text-surface-600 hover:bg-surface-100 dark:text-surface-400 dark:hover:bg-surface-800/60'
       ]"
       :title="props.compact ? props.label : undefined"
   >
@@ -42,9 +42,9 @@ const props = withDefaults(defineProps<Props>(), {
 
     <span
         v-if="props.badge && !props.compact"
-        class="rounded-full bg-gray-200 px-2 py-0.5
-             text-[10px] font-bold text-gray-600
-             dark:bg-gray-800 dark:text-gray-400"
+        class="rounded-full bg-surface-200 px-2 py-0.5
+             text-[10px] font-bold text-surface-600
+             dark:bg-surface-800 dark:text-surface-400"
     >
       {{ props.badge }}
     </span>

@@ -89,41 +89,40 @@ const openDoc = async (event: MouseEvent, id: keyof typeof links) => {
 </script>
 
 <template>
-  <details open class="mt-5 rounded-xl border border-gray-200 bg-gray-50 p-4 text-sm dark:border-gray-700 dark:bg-gray-800/40">
-    <summary class="cursor-pointer font-semibold">{{ text.title }}</summary>
-    <div class="mt-4 space-y-5 text-gray-600 dark:text-gray-300">
+  <AppDisclosure :title="text.title" class="mt-5">
+    <div class="space-y-5 text-surface-600 dark:text-surface-300">
       <section v-if="provider === 'local'" class="space-y-3">
-        <h3 class="font-semibold text-gray-900 dark:text-gray-100">{{ text.local }}</h3>
+        <h3 class="font-semibold text-surface-900 dark:text-surface-100">{{ text.local }}</h3>
         <ol class="list-decimal space-y-2 pl-5"><li v-for="step in text.localSteps" :key="step">{{ step }}</li></ol>
         <p class="text-xs">{{ text.endpoint }}</p>
-        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-gray-900">http://127.0.0.1:1234/v1</code>
+        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">http://127.0.0.1:1234/v1</code>
         <p>{{ text.browser }}</p><p>{{ text.authentication }}</p>
         <h4 class="font-semibold">{{ text.networkTitle }}</h4>
         <p>{{ text.network }}</p>
-        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-gray-900">http://&lt;Windows IP&gt;:1234/v1</code>
+        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">http://&lt;Windows IP&gt;:1234/v1</code>
         <p>{{ text.docker }}</p>
       </section>
       <section v-else class="space-y-3">
-        <h3 class="font-semibold text-gray-900 dark:text-gray-100">{{ text.global }}</h3>
+        <h3 class="font-semibold text-surface-900 dark:text-surface-100">{{ text.global }}</h3>
         <ol class="list-decimal space-y-2 pl-5"><li v-for="step in text.globalSteps" :key="step">{{ step }}</li></ol>
         <p class="text-xs">{{ text.endpoint }} — OpenAI</p>
-        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-gray-900">https://api.openai.com/v1</code>
+        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">https://api.openai.com/v1</code>
         <p>{{ text.compatibility }}</p>
         <p class="text-xs">{{ text.privacy }}</p>
       </section>
       <section>
-        <h3 class="mb-2 font-semibold text-gray-900 dark:text-gray-100">{{ text.troubleshooting }}</h3>
+        <h3 class="mb-2 font-semibold text-surface-900 dark:text-surface-100">{{ text.troubleshooting }}</h3>
         <dl class="space-y-3"><div v-for="[code, hint] in text.errors" :key="code"><dt class="font-mono text-xs font-semibold">{{ code }}</dt><dd class="mt-1 text-xs leading-relaxed">{{ hint }}</dd></div></dl>
       </section>
       <nav :aria-label="text.docs">
-        <h3 class="mb-2 font-semibold text-gray-900 dark:text-gray-100">{{ text.docs }}</h3>
+        <h3 class="mb-2 font-semibold text-surface-900 dark:text-surface-100">{{ text.docs }}</h3>
         <ul class="space-y-2">
           <li v-for="(url, id) in links" :key="id">
-            <a :href="url" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-emerald-700 underline underline-offset-2 dark:text-emerald-400" @click="openDoc($event, id)">{{ text.links[id] }}<Icon name="lucide:external-link" size="12" /></a>
+            <a :href="url" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-1 text-xs text-primary-700 underline underline-offset-2 dark:text-primary-400" @click="openDoc($event, id)">{{ text.links[id] }}<Icon name="lucide:external-link" size="12" /></a>
           </li>
         </ul>
         <p v-if="error" class="mt-2 text-xs text-rose-500" role="alert">{{ error }}</p>
       </nav>
     </div>
-  </details>
+  </AppDisclosure>
 </template>

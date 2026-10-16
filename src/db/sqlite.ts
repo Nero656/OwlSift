@@ -1,3 +1,4 @@
+import { createFileVisibilityFilter } from '../utils/hiddenFiles';
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -40,6 +41,18 @@ export const MAX_FILES_PER_FOLDER = 1000;
 class DatabaseManager {
     private db: Database.Database | null = null;
     private dbPath: string | null = null;
+    private includeSystemFiles = false;
+    private visibility = createFileVisibilityFilter();
+
+    public setSystemFileVisibility(include: boolean): void {
+        this.includeSystemFiles = include === true;
+        this.visibility = createFileVisibilityFilter();
+    }
+
+    public isFileVisible(filePath: string): boolean {
+        if (this.includeSystemFiles) return true;
+        try { return !this.visibility.isHidden(filePath); } catch { return false; }
+    }
 
     /**
      * Инициализация БД и создание таблиц
@@ -57,6 +70,7 @@ class DatabaseManager {
         }
 
         this.db = new Database(dbPath);
+        this.db.function('owlsift_file_visible', (filePath: string) => this.isFileVisible(filePath) ? 1 : 0);
         this.dbPath = dbPath;
         this.db.pragma('foreign_keys = ON');
 
@@ -72,18 +86,25 @@ class DatabaseManager {
         const limit = Math.max(1, Math.min(5000, Math.floor(requestedLimit) || MAX_FILES_PER_FOLDER));
 
         const textExtensions = new Set([
-            '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
+            '.tsv', '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
             '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
         ]);
+        const visibility = createFileVisibilityFilter();
+        if (!this.includeSystemFiles && visibility.isHidden(folderPath)) throw new Error('Hidden folders cannot be indexed');
         let indexedCount = 0;
         let skippedCount = 0;
 
         const visit = (directory: string): void => {
-            const entries = fs.readdirSync(directory, { withFileTypes: true })
+            let entries: fs.Dirent[];
+            try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
+            entries = entries
                 .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
             for (const entry of entries) {
                 const entryPath = path.join(directory, entry.name);
                 if (entry.isSymbolicLink()) continue;
+                try {
+                    if (!this.includeSystemFiles && visibility.isHidden(entryPath)) { skippedCount++; continue; }
+                } catch { skippedCount++; continue; }
                 if (entry.isDirectory()) {
                     visit(entryPath);
                     continue;
@@ -120,7 +141,7 @@ class DatabaseManager {
         const activePaths = (this.db.prepare('SELECT id, path FROM files WHERE is_deleted = 0').all() as Array<{ id: number; path: string }>)
             .filter(({ path: filePath }) => {
                 const relative = path.relative(folderPath, filePath);
-                return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+                return this.isFileVisible(filePath) && relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
             })
             .sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
         const capExcess = activePaths.slice(limit);
@@ -141,7 +162,7 @@ class DatabaseManager {
 
     private readTextExtensions() {
         return new Set([
-            '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
+            '.tsv', '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
             '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
         ]);
     }
@@ -160,6 +181,7 @@ class DatabaseManager {
     public indexSingleFile(filePath: string, folderPath?: string): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
         if (!this.db) throw new Error('SQLite is not initialized');
         if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) throw new Error('File not found');
+        if (!this.isFileVisible(filePath)) throw new Error('System and hidden files are excluded by the current settings');
         const stat = fs.statSync(filePath);
         const name = path.basename(filePath);
         const extension = path.extname(name).toLowerCase().replace(/^\./, '');
@@ -185,12 +207,33 @@ class DatabaseManager {
         if (!folderPath || !fs.existsSync(folderPath) || !fs.statSync(folderPath).isDirectory()) {
             throw new Error('Folder not found');
         }
+        if (!this.listFolders().some(folder => path.resolve(folder.path) === path.resolve(folderPath))) throw new Error('Workspace not found');
         const safeName = path.basename((fileName || 'untitled.txt').replace(/[\\/:*?"<>|]/g, '-'));
         const filePath = path.join(folderPath, safeName);
+        if (createFileVisibilityFilter().isHidden(folderPath) || safeName.startsWith('.') || safeName.startsWith('~$')) throw new Error('Hidden files cannot be created');
         fs.writeFileSync(filePath, bytes ?? content ?? '', { flag: 'wx' });
         const result = this.indexSingleFile(filePath, folderPath);
-        this.saveFile({ path: filePath, name: safeName, extension: path.extname(safeName).slice(1), size: fs.statSync(filePath).size, mtime: Date.now(), content });
+        this.saveFile({ path: filePath, name: safeName, extension: path.extname(safeName).slice(1), size: fs.statSync(filePath).size, mtime: Math.floor(fs.statSync(filePath).mtimeMs), content });
         return result;
+    }
+
+    /** Update only an existing indexed document, without accepting a model-supplied path. */
+    public editIndexedFile(fileId: number, content: string, bytes: Buffer, expectedMtime: number): void {
+        if (!this.db || !Number.isInteger(fileId) || typeof content !== 'string' || content.length > 2000000 || bytes.length > 20 * 1024 * 1024) throw new Error('Invalid document edit');
+        const record = this.db.prepare('SELECT path FROM files WHERE id = ? AND is_deleted = 0').get(fileId) as { path: string } | undefined;
+        if (!record) throw new Error('Indexed file not found');
+        if (createFileVisibilityFilter().isHidden(record.path) || fs.lstatSync(record.path).isSymbolicLink()) throw new Error('This file cannot be edited');
+        const descriptor = fs.openSync(record.path, 'r+');
+        try {
+            const stat = fs.fstatSync(descriptor);
+            if (!stat.isFile() || Math.floor(stat.mtimeMs) !== expectedMtime) throw new Error('The file changed since indexing. Refresh the folder before editing.');
+            // A local backup preserves the original binary and formatting.
+            fs.copyFileSync(record.path, path.join(path.dirname(record.path), '.' + path.basename(record.path) + '.' + Date.now() + '.owlsift-backup'), fs.constants.COPYFILE_EXCL);
+            fs.writeFileSync(descriptor, bytes);
+            fs.ftruncateSync(descriptor, bytes.length);
+        } finally { fs.closeSync(descriptor); }
+        const stat = fs.statSync(record.path);
+        this.saveFile({ path: record.path, name: path.basename(record.path), extension: path.extname(record.path).slice(1), size: stat.size, mtime: Math.floor(stat.mtimeMs), content });
     }
 
     public getFileContent(fileId: number): string {
@@ -203,9 +246,9 @@ class DatabaseManager {
         if (!this.db) return [];
         const folders = this.db.prepare('SELECT name, path FROM indexed_folders ORDER BY name COLLATE NOCASE')
             .all() as Array<{ name: string; path: string }>;
-        const activePaths = (this.db.prepare('SELECT path FROM files WHERE is_deleted = 0').all() as Array<{ path: string }>)
+        const activePaths = (this.db.prepare('SELECT path FROM files WHERE is_deleted = 0 AND owlsift_file_visible(path) = 1').all() as Array<{ path: string }>)
             .map(({ path: filePath }) => filePath);
-        return folders.map((folder) => ({
+        return folders.filter(folder => this.isFileVisible(folder.path)).map((folder) => ({
             ...folder,
             count: activePaths.filter((filePath) => {
                 const relative = path.relative(folder.path, filePath);
@@ -219,7 +262,7 @@ class DatabaseManager {
         const records = this.db.prepare(`
             SELECT id, path, name, extension, size, mtime,
               CASE WHEN content = '' THEN name ELSE substr(content, 1, 240) END AS snippet
-            FROM files WHERE is_deleted = 0 ORDER BY name COLLATE NOCASE
+            FROM files WHERE is_deleted = 0 AND owlsift_file_visible(path) = 1 ORDER BY name COLLATE NOCASE
         `).all() as IndexedFileRecord[];
         return this.attachTags(records);
     }
@@ -236,7 +279,7 @@ class DatabaseManager {
         this.db.prepare('UPDATE files SET is_deleted = 1 WHERE id = ?').run(fileId);
     }
 
-    /** Remove an indexed workspace and hide its files from LocalMind without touching disk. */
+    /** Remove an indexed workspace and hide its files from OwlSift without touching disk. */
     public removeFolderFromIndex(folderPath: string): void {
         if (!this.db) throw new Error('SQLite is not initialized');
         const indexedFolder = this.db.prepare('SELECT 1 FROM indexed_folders WHERE path = ?').get(folderPath);
@@ -337,7 +380,7 @@ class DatabaseManager {
         }
 
         try {
-            const { count } = this.db.prepare('SELECT COUNT(*) AS count FROM files WHERE is_deleted = 0').get() as { count: number };
+            const { count } = this.db.prepare('SELECT COUNT(*) AS count FROM files WHERE is_deleted = 0 AND owlsift_file_visible(path) = 1').get() as { count: number };
             const fts5Available = Boolean(this.db.prepare(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'"
             ).get());
@@ -478,7 +521,7 @@ class DatabaseManager {
         snippet(files_fts, 1, '<mark>', '</mark>', '...', 15) AS snippet
       FROM files_fts
       JOIN files f ON f.id = files_fts.rowid
-      WHERE files_fts MATCH ? AND f.is_deleted = 0
+      WHERE files_fts MATCH ? AND f.is_deleted = 0 AND owlsift_file_visible(f.path) = 1
       ORDER BY rank
       LIMIT ?
     `);
@@ -495,7 +538,7 @@ class DatabaseManager {
             SELECT f.id, f.path, f.name, f.extension, f.size, f.mtime,
               CASE WHEN f.content = '' THEN f.name ELSE substr(f.content, 1, 240) END AS snippet
             FROM files f
-            WHERE f.is_deleted = 0 AND EXISTS (
+            WHERE f.is_deleted = 0 AND owlsift_file_visible(f.path) = 1 AND EXISTS (
               SELECT 1 FROM file_tags t
               WHERE t.file_id = f.id AND (${terms.map(() => 'LOWER(t.tag) LIKE LOWER(?)').join(' OR ')})
             )

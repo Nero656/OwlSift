@@ -63,7 +63,7 @@ const navItems = computed(() => [
 
 <template>
   <aside
-      class="flex shrink-0 flex-col justify-between border-r border-gray-200 bg-white/50 transition-[width] duration-200 dark:border-gray-800 dark:bg-gray-900/50"
+      class="flex shrink-0 flex-col justify-between border-r border-surface-200 bg-white/50 transition-[width] duration-200 dark:border-surface-800 dark:bg-surface-900/50"
       :class="isCompact ? 'w-16' : 'w-64'"
   >
     <div :class="isCompact ? 'space-y-4 p-2' : 'space-y-6 p-3'">
@@ -90,7 +90,7 @@ const navItems = computed(() => [
         <div
             class="mb-2 flex items-center justify-between
              px-3.5 text-[10px] font-bold
-             uppercase tracking-wider text-gray-400"
+             uppercase tracking-wider text-surface-400"
         >
           <span>{{ t('workspaces') }}</span>
 
@@ -119,10 +119,10 @@ const navItems = computed(() => [
     <div>
       <Sqlite_status v-if="!isCompact" />
       <SupportDeveloper :compact="isCompact" />
-      <div class="flex p-2" :class="isCompact ? 'justify-center border-t border-gray-200 dark:border-gray-800' : 'justify-end'">
+      <div class="flex p-2" :class="isCompact ? 'justify-center border-t border-surface-200 dark:border-surface-800' : 'justify-end'">
         <button
           type="button"
-          class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+          class="rounded-lg p-2 text-surface-500 transition hover:bg-surface-100 hover:text-surface-700 dark:text-surface-400 dark:hover:bg-surface-800 dark:hover:text-surface-200"
           :title="isCompact ? t('expandSidebar') : t('collapseSidebar')"
           :aria-label="isCompact ? t('expandSidebar') : t('collapseSidebar')"
           :aria-pressed="isCompact"

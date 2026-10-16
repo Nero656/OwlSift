@@ -1,3 +1,5 @@
+import { modelContentToText } from './chatContent'
+
 export type AiFeedback = (stage: string, text?: string) => void
 
 // Read SSE frames across arbitrary UTF-8 and network chunk boundaries.
@@ -13,7 +15,7 @@ export async function readAiStream(response: Response, feedback: AiFeedback): Pr
     if (event.error) throw new Error(event.error.message || 'Model stream failed')
     const delta = event.choices?.[0]?.delta
     const content = delta?.content
-    const text = typeof content === 'string' ? content : Array.isArray(content) ? content.map(part => part.text || '').join('') : ''
+    const text = modelContentToText(content) + modelContentToText(delta?.images)
     if (text) { answer += text; feedback('receiving', answer) }
     else if (delta?.reasoning_content || delta?.reasoning) feedback('processing')
     else if (!answer) feedback('waiting')

@@ -44,14 +44,14 @@ const confirmRemoveFolder = async () => {
 <template>
   <section class="flex-1 overflow-y-auto p-5 md:p-7" @dragover.prevent @drop.prevent.stop>
     <header class="mb-5 flex flex-wrap items-center justify-between gap-3">
-      <h1 class="text-xl font-bold text-gray-900 dark:text-gray-100">{{ t('workspaces') }}</h1>
-      <p class="mr-auto basis-full text-xs text-gray-500">{{ t('folderIndexLimit') }} <strong class="font-semibold text-gray-700 dark:text-gray-300">{{ maxFilesPerFolder }}</strong></p>
-      <p v-if="fileActionNotice" class="basis-full text-xs text-emerald-600">{{ fileActionNotice }}</p>
-      <div class="inline-flex rounded-lg border border-gray-200 p-1 dark:border-gray-700" role="group" :aria-label="t('workspaces')">
+      <h1 class="text-xl font-bold text-surface-900 dark:text-surface-100">{{ t('workspaces') }}</h1>
+      <p class="mr-auto basis-full text-xs text-surface-500">{{ t('folderIndexLimit') }} <strong class="font-semibold text-surface-700 dark:text-surface-300">{{ maxFilesPerFolder }}</strong></p>
+      <p v-if="fileActionNotice" class="basis-full text-xs text-primary-600">{{ fileActionNotice }}</p>
+      <div class="inline-flex rounded-lg border border-surface-200 p-1 dark:border-surface-700" role="group" :aria-label="t('workspaces')">
         <button
           type="button"
           class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors"
-          :class="folderView === 'list' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          :class="folderView === 'list' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
           :aria-pressed="folderView === 'list'"
           @click="folderView = 'list'"
         >
@@ -60,7 +60,7 @@ const confirmRemoveFolder = async () => {
         <button
           type="button"
           class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-colors"
-          :class="folderView === 'grid' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          :class="folderView === 'grid' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
           :aria-pressed="folderView === 'grid'"
           @click="folderView = 'grid'"
         >
@@ -73,36 +73,36 @@ const confirmRemoveFolder = async () => {
       <FileDropZone tag="article" :folder-path="folder.path"
         v-for="folder in folders"
         :key="folder.path"
-        class="workspace-card flex min-w-0 items-center gap-3 rounded-xl border border-gray-200 bg-white p-4 dark:border-gray-800 dark:bg-gray-800/50"
+        class="workspace-card flex min-w-0 items-center gap-3 rounded-xl border border-surface-200 bg-white p-4 dark:border-surface-800 dark:bg-surface-800/50"
         :class="folderView === 'list' ? 'w-full' : 'flex-col items-start'"
       >
-        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-emerald-500/10 text-emerald-500">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary-500/10 text-primary-500">
           <Icon name="lucide:folder-git-2" size="20" />
         </div>
         <div class="min-w-0 flex-1" :class="folderView === 'grid' ? 'w-full' : ''">
-          <h2 class="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">{{ folder.name }}</h2>
-          <p class="mt-1 truncate font-mono text-[11px] text-gray-400">{{ folder.path }}</p>
-          <p class="mt-2 text-xs text-gray-500">{{ folder.count }} {{ t('files') }}</p>
+          <h2 class="truncate text-sm font-semibold text-surface-900 dark:text-surface-100">{{ folder.name }}</h2>
+          <p class="mt-1 truncate font-mono text-[11px] text-surface-400">{{ folder.path }}</p>
+          <p class="mt-2 text-xs text-surface-500">{{ folder.count }} {{ t('files') }}</p>
         </div>
         <div class="workspace-card-actions flex min-w-0 shrink-0 flex-wrap items-center gap-2" :class="folderView === 'grid' ? 'w-full' : ''">
           <button
             type="button"
-            class="flex-1 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400"
+            class="flex-1 rounded-lg bg-primary-500/10 px-3 py-2 text-xs font-medium text-primary-600 transition hover:bg-primary-500/20 dark:text-primary-400"
             @click="openFolder(folder.name)"
           >{{ t('openFolder') }}</button>
           <button
             type="button"
-            class="rounded-lg bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
+            class="rounded-lg bg-surface-100 px-3 py-2 text-xs font-medium text-surface-700 transition hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300"
             @click="addFileToFolder(folder.path)"
           >{{ t('addFileToFolder') }}</button>
           <button
             type="button"
-            class="rounded-lg bg-gray-100 px-3 py-2 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300"
+            class="rounded-lg bg-surface-100 px-3 py-2 text-xs font-medium text-surface-700 transition hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300"
             @click="openCreateFileDialog(folder.path)"
           >{{ t('createFile') }}</button>
           <button
             type="button"
-            class="rounded-lg p-2 text-gray-500 transition hover:bg-rose-500/10 hover:text-rose-600 dark:text-gray-400"
+            class="rounded-lg p-2 text-surface-500 transition hover:bg-rose-500/10 hover:text-rose-600 dark:text-surface-400"
             :title="t('removeFromIndex')"
             :aria-label="`${t('removeFromIndex')}: ${folder.name}`"
             @click="folderToRemove = folder; removeError = ''"
@@ -112,20 +112,20 @@ const confirmRemoveFolder = async () => {
     </div>
 
     <div v-else class="flex min-h-64 flex-col items-center justify-center text-center">
-      <Icon name="lucide:folder-open" size="40" class="mb-3 text-gray-300 dark:text-gray-700" />
-      <p class="max-w-sm text-sm text-gray-500">{{ t('noIndexedFolders') }}</p>
+      <Icon name="lucide:folder-open" size="40" class="mb-3 text-surface-300 dark:text-surface-700" />
+      <p class="max-w-sm text-sm text-surface-500">{{ t('noIndexedFolders') }}</p>
     </div>
   </section>
 
   <Teleport to="body">
-    <div v-if="folderToRemove" class="fixed inset-0 z-[100] flex items-center justify-center bg-gray-950/60 p-4 backdrop-blur-sm" @click.self="!isRemoving && (folderToRemove = null)">
-      <section role="dialog" aria-modal="true" aria-labelledby="remove-folder-title" class="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-gray-900">
-        <h2 id="remove-folder-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">{{ t('removeFolderTitle') }}</h2>
-        <p class="mt-2 break-all text-sm text-gray-700 dark:text-gray-300">{{ folderToRemove.name }}</p>
-        <p class="mt-2 text-xs leading-relaxed text-gray-500">{{ t('removeFolderMessage') }}</p>
+    <div v-if="folderToRemove" class="fixed inset-0 z-[100] flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm" @click.self="!isRemoving && (folderToRemove = null)">
+      <section role="dialog" aria-modal="true" aria-labelledby="remove-folder-title" class="w-full max-w-md rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900">
+        <h2 id="remove-folder-title" class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ t('removeFolderTitle') }}</h2>
+        <p class="mt-2 break-all text-sm text-surface-700 dark:text-surface-300">{{ folderToRemove.name }}</p>
+        <p class="mt-2 text-xs leading-relaxed text-surface-500">{{ t('removeFolderMessage') }}</p>
         <p v-if="removeError" class="mt-3 text-xs text-rose-500" role="alert">{{ removeError }}</p>
         <div class="mt-5 flex justify-end gap-2">
-          <button type="button" class="rounded-xl border border-gray-200 px-3.5 py-2 text-xs text-gray-600 dark:border-gray-700 dark:text-gray-300" :disabled="isRemoving" @click="folderToRemove = null">{{ t('cancel') }}</button>
+          <button type="button" class="rounded-xl border border-surface-200 px-3.5 py-2 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" :disabled="isRemoving" @click="folderToRemove = null">{{ t('cancel') }}</button>
           <button type="button" class="rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="isRemoving" @click="confirmRemoveFolder">{{ t('removeFromIndex') }}</button>
         </div>
       </section>

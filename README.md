@@ -1,4 +1,4 @@
-# Nuxt Minimal Starter
+# OwlSift
 
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
@@ -73,3 +73,8 @@ bun run preview
 ```
 
 Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
+
+
+## Comfy Desktop image generation
+
+See the [connection, workflow, local/cloud and project-saving guide](docs/comfy-integration.md). Setup instructions are also available in Settings → Comfy Desktop.

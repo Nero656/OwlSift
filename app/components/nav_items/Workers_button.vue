@@ -24,8 +24,8 @@ const emit = defineEmits<{
            text-xs transition-colors"
       :class="
       props.active
-        ? 'bg-gray-200/70 font-medium text-gray-900 dark:bg-gray-800 dark:text-gray-100'
-        : 'text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/40'
+        ? 'bg-surface-200/70 font-medium text-surface-900 dark:bg-surface-800 dark:text-surface-100'
+        : 'text-surface-500 hover:bg-surface-100 dark:text-surface-400 dark:hover:bg-surface-800/40'
     "
       @click="emit('select', props.name)"
   >
@@ -33,7 +33,7 @@ const emit = defineEmits<{
       <Icon
           name="lucide:folder-git-2"
           size="14"
-          class="shrink-0 text-emerald-500"
+          class="shrink-0 text-primary-500"
       />
 
       <span class="truncate">
@@ -43,7 +43,7 @@ const emit = defineEmits<{
 
     <span
         v-if="props.count !== null && props.count !== undefined"
-        class="shrink-0 text-[10px] text-gray-400"
+        class="shrink-0 text-[10px] text-surface-400"
     >
       {{ props.count }}
     </span>

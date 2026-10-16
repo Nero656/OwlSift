@@ -49,13 +49,13 @@ const drop = async (event: DragEvent) => {
 </script>
 
 <template>
-  <component :is="tag" class="relative" :class="depth ? 'ring-2 ring-inset ring-emerald-500' : ''"
+  <component :is="tag" class="relative" :class="depth ? 'ring-2 ring-inset ring-primary-500' : ''"
     @dragenter="enter" @dragover="over" @dragleave="leave" @drop="drop">
     <slot />
-    <div v-if="depth || importing" class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-emerald-500 bg-white/90 p-3 text-center text-xs font-medium text-emerald-700 dark:bg-gray-900/90 dark:text-emerald-400" role="status">
+    <div v-if="depth || importing" class="pointer-events-none absolute inset-0 z-40 flex items-center justify-center rounded-xl border-2 border-dashed border-primary-500 bg-white/90 p-3 text-center text-xs font-medium text-primary-700 dark:bg-surface-900/90 dark:text-primary-400" role="status">
       <span>{{ importing ? t('dropImporting') : t('dropFiles') }}</span>
     </div>
-    <div v-if="notice" role="status" class="z-20 flex shrink-0 items-start gap-2 rounded-lg bg-emerald-50 p-2 text-xs text-emerald-800 dark:bg-gray-800 dark:text-emerald-300">
+    <div v-if="notice" role="status" class="z-20 flex shrink-0 items-start gap-2 rounded-lg bg-primary-50 p-2 text-xs text-primary-800 dark:bg-surface-800 dark:text-primary-300">
       <span class="min-w-0 flex-1 break-words">{{ notice }}</span>
       <button type="button" class="shrink-0" :aria-label="t('closeDialog')" @click.stop.prevent="notice = ''"><Icon name="lucide:x" size="14" /></button>
     </div>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import FileCard from './FileCard.vue'
+import type { LocalFile } from '~/types/file'
 const { t } = useLanguage()
 
 const {
@@ -7,6 +8,8 @@ const {
   folders,
   filteredFiles,
   activeFile,
+  selectedFileIds: selectedIds,
+  selectedFiles: selectedDocuments,
   selectFile,
   sortBy,
   selectedTag,
@@ -18,13 +21,21 @@ const {
   addOneFile,
 } = useFiles()
 const dropFolderPath = computed(() => folders.value.find(folder => folder.name === selectedFolder.value)?.path)
-const selectedIds = ref<number[]>([])
 const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
-const selectedDocuments = computed(() => files.value.filter(file => selectedIds.value.includes(file.id)))
 const toggleDocument = (file: { id: number }) => { selectedIds.value = selectedIds.value.includes(file.id) ? selectedIds.value.filter(id => id !== file.id) : [...selectedIds.value, file.id] }
-const selectPage = () => { selectedIds.value = [...new Set([...selectedIds.value, ...pagedFiles.value.map(file => file.id)])] }
+const previewSelectedDocument = (file: LocalFile) => {
+  const selected = selectedDocuments.value.find(item => item.id === file.id) ?? selectedDocuments.value[0]
+  if (selected) selectFile(selected)
+  else activeFile.value = null
+}
+const clearSelection = () => { selectedIds.value = []; activeFile.value = null }
+const selectPage = () => {
+  selectedIds.value = [...new Set([...selectedIds.value, ...pagedFiles.value.map(file => file.id)])]
+  const first = selectedDocuments.value[0]
+  if (first) previewSelectedDocument(activeFile.value ?? first)
+}
 const analyzeSelection = async () => { attachedIds.value = selectedDocuments.value.map(file => file.id); await navigateTo('/ai_assistant') }
-watch(selectedFolder, () => { selectedIds.value = [] })
+watch(selectedFolder, clearSelection)
 watch(files, () => { const existing = new Set(files.value.map(file => file.id)); selectedIds.value = selectedIds.value.filter(id => existing.has(id)) })
 const { settings } = useSettings()
 const { summarize } = useAi()
@@ -47,7 +58,8 @@ watch([searchQuery, selectedTag, selectedType, selectedFolder], () => { currentP
 watch(() => filteredFiles.value.length, () => { currentPage.value = 1 })
 watch(pageCount, count => { if (currentPage.value > count) currentPage.value = count })
 
-const openSummary = async (file: any) => {
+const openSummary = async (file: LocalFile) => {
+  if (!selectedIds.value.includes(file.id)) selectedIds.value = [...selectedIds.value, file.id]
   selectFile(file)
   rightTab.value = 'summary'
   await summarize(file)
@@ -56,19 +68,19 @@ const openSummary = async (file: any) => {
 
 <template>
   <FileDropZone :folder-path="dropFolderPath" class="min-h-0 flex-1 overflow-y-auto p-4">
-    <div class="sticky top-0 z-20 mb-3 flex max-h-[35dvh] flex-col gap-3 overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white p-3 text-xs shadow-sm dark:border-gray-700 dark:bg-gray-900">
+    <div class="sticky top-0 z-20 mb-3 flex max-h-[35dvh] flex-col gap-3 overflow-y-auto overscroll-contain rounded-xl border border-surface-200 bg-white p-3 text-xs shadow-sm dark:border-surface-700 dark:bg-surface-900">
       <div class="flex flex-wrap items-center gap-2">
       <span>{{ t('selectedDocuments') }} {{ selectedDocuments.length }}</span>
-      <button type="button" class="rounded-lg border border-gray-200 px-3 py-2 dark:border-gray-700" :disabled="!pagedFiles.length" @click="selectPage">{{ t('selectPage') }}</button>
-      <button type="button" class="rounded-lg px-3 py-2 disabled:opacity-40" :disabled="!selectedIds.length" @click="selectedIds = []">{{ t('clearSelection') }}</button>
-      <button type="button" class="ml-auto rounded-lg bg-emerald-600 px-3 py-2 text-white disabled:opacity-40" :disabled="!selectedDocuments.length" @click="analyzeSelection">{{ t('analyzeSelection') }}</button>
+      <button type="button" class="rounded-lg border border-surface-200 px-3 py-2 dark:border-surface-700" :disabled="!pagedFiles.length" @click="selectPage">{{ t('selectPage') }}</button>
+      <button type="button" class="rounded-lg px-3 py-2 disabled:opacity-40" :disabled="!selectedIds.length" @click="clearSelection">{{ t('clearSelection') }}</button>
+      <button type="button" class="ml-auto rounded-lg bg-primary-600 px-3 py-2 text-white disabled:opacity-40" :disabled="!selectedDocuments.length" @click="analyzeSelection">{{ t('analyzeSelection') }}</button>
       </div>
-      <div class="flex flex-wrap items-center gap-3 border-t border-gray-200 pt-3 dark:border-gray-700">
-      <div class="inline-flex rounded-lg border border-gray-200 p-1 dark:border-gray-700" role="group" :aria-label="t('search')">
+      <div class="flex flex-wrap items-center gap-3 border-t border-surface-200 pt-3 dark:border-surface-700">
+      <div class="inline-flex rounded-lg border border-surface-200 p-1 dark:border-surface-700" role="group" :aria-label="t('search')">
         <button
           type="button"
           class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors"
-          :class="fileView === 'list' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          :class="fileView === 'list' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
           :aria-pressed="fileView === 'list'"
           @click="fileView = 'list'"
         >
@@ -77,7 +89,7 @@ const openSummary = async (file: any) => {
         <button
           type="button"
           class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors"
-          :class="fileView === 'grid' ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'"
+          :class="fileView === 'grid' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
           :aria-pressed="fileView === 'grid'"
           @click="fileView = 'grid'"
         >
@@ -85,12 +97,12 @@ const openSummary = async (file: any) => {
         </button>
       </div>
 
-      <label class="flex items-center gap-2 text-xs text-gray-500">
+      <label class="flex items-center gap-2 text-xs text-surface-500">
         <span>{{ t('sortLabel') }}</span>
         <AppDropdown v-model="sortBy" :options="[{ value: 'relevance', label: t('sortRelevance') }, { value: 'date', label: t('sortDate') }, { value: 'name', label: t('sortName') }, { value: 'tag', label: t('sortTag') }]" />
       </label>
 
-      <label class="flex items-center gap-2 text-xs text-gray-500">
+      <label class="flex items-center gap-2 text-xs text-surface-500">
         <span>{{ t('filterTag') }}</span>
         <AppDropdown v-model="selectedTag" :options="[{ value: null, label: t('allTags') }, ...allTags.map(tag => ({ value: tag, label: '#' + tag }))]" class="max-w-40" />
       </label>
@@ -105,19 +117,19 @@ const openSummary = async (file: any) => {
       <Icon
           name="lucide:file-search"
           size="48"
-          class="mb-3 text-gray-300 dark:text-gray-700"
+          class="mb-3 text-surface-300 dark:text-surface-700"
       />
 
-      <p class="font-semibold text-gray-700 dark:text-gray-300">
+      <p class="font-semibold text-surface-700 dark:text-surface-300">
         {{ t('noMatchingFiles') }}
       </p>
 
-      <p class="mt-1 text-xs text-gray-500">
+      <p class="mt-1 text-xs text-surface-500">
         {{ t('adjustQuery') }}
       </p>
       <div class="mt-4 flex gap-2">
-        <button type="button" class="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-semibold text-white" @click="openCreateFileDialog()">{{ t('createFile') }}</button>
-        <button type="button" class="rounded-xl border border-gray-200 px-3 py-2 text-xs font-medium text-gray-600 dark:border-gray-700 dark:text-gray-300" @click="addOneFile()">{{ t('addFile') }}</button>
+        <button type="button" class="rounded-xl bg-primary-600 px-3 py-2 text-xs font-semibold text-white" @click="openCreateFileDialog()">{{ t('createFile') }}</button>
+        <button type="button" class="rounded-xl border border-surface-200 px-3 py-2 text-xs font-medium text-surface-600 dark:border-surface-700 dark:text-surface-300" @click="addOneFile()">{{ t('addFile') }}</button>
       </div>
     </div>
 
@@ -131,12 +143,12 @@ const openSummary = async (file: any) => {
           selectable
           :selected="selectedIds.includes(file.id)"
           @toggle="toggleDocument"
-          @select="selectFile"
+          @select="previewSelectedDocument"
           @summary="openSummary"
       />
     </div>
 
-    <footer v-if="filteredFiles.length" class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-gray-100 pt-3 text-xs text-gray-500 dark:border-gray-800">
+    <footer v-if="filteredFiles.length" class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-surface-100 pt-3 text-xs text-surface-500 dark:border-surface-800">
       <div class="flex items-center gap-2">
         <span>{{ t('showingFiles') }} {{ firstVisible }}–{{ lastVisible }} {{ t('ofFiles') }} {{ filteredFiles.length }}</span>
         <label class="flex items-center gap-1.5">
@@ -145,9 +157,9 @@ const openSummary = async (file: any) => {
         </label>
       </div>
       <div class="flex items-center gap-2">
-        <button type="button" class="rounded-lg border border-gray-200 px-3 py-1.5 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800" :disabled="currentPage <= 1" @click="currentPage--">{{ t('previousPage') }}</button>
+        <button type="button" class="rounded-lg border border-surface-200 px-3 py-1.5 transition hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-surface-700 dark:hover:bg-surface-800" :disabled="currentPage <= 1" @click="currentPage--">{{ t('previousPage') }}</button>
         <span>{{ t('page') }} {{ currentPage }} {{ t('ofFiles') }} {{ pageCount }}</span>
-        <button type="button" class="rounded-lg border border-gray-200 px-3 py-1.5 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-gray-700 dark:hover:bg-gray-800" :disabled="currentPage >= pageCount" @click="currentPage++">{{ t('nextPage') }}</button>
+        <button type="button" class="rounded-lg border border-surface-200 px-3 py-1.5 transition hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-surface-700 dark:hover:bg-surface-800" :disabled="currentPage >= pageCount" @click="currentPage++">{{ t('nextPage') }}</button>
       </div>
     </footer>
 

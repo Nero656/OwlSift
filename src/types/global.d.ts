@@ -1,15 +1,19 @@
+import type { ComfyRequest, ComfyResponse } from '../services/comfyTransport';
 import type { DatabaseStatus } from '../db/sqlite';
 import type { IndexedFileRecord } from '../db/sqlite';
 
 export interface IElectronAPI {
     platform: NodeJS.Platform;
     getPathForFile(file: File): string;
-    invoke(channel: 'files:import-drop', data: { filePath: string; folderPath?: string; maxFiles: number }): Promise<string>;
+    invoke(channel: 'comfy:request', request: ComfyRequest): Promise<ComfyResponse>;
+  invoke(channel: 'files:import-drop', data: { filePath: string; folderPath?: string; maxFiles: number }): Promise<string>;
+    invoke(channel: 'app:open-external', href: string): Promise<void>;
     invoke(channel: 'app:open-ai-doc', id: string): Promise<void>;
     invoke(channel: 'app:open-donation'): Promise<void>;
     send: (channel: 'app:minimize' | 'app:maximize' | 'app:close', data?: unknown) => void;
     invoke(channel: 'app:get-version', data?: unknown): Promise<string>;
     invoke(channel: 'db:get-status', data?: unknown): Promise<DatabaseStatus>;
+    invoke(channel: 'files:set-system-visibility', include: boolean): Promise<void>;
     invoke(channel: 'files:list', data?: unknown): Promise<IndexedFileRecord[]>;
     invoke(channel: 'files:add-tag', data: { fileId: number; tag: string }): Promise<string[]>;
     invoke(channel: 'files:remove-tag', data: { fileId: number; tag: string }): Promise<string[]>;
@@ -23,7 +27,8 @@ export interface IElectronAPI {
     invoke(channel: 'files:search', data: string): Promise<IndexedFileRecord[]>;
     invoke(channel: 'files:choose-and-index', data?: { maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
     invoke(channel: 'files:choose-and-index-file', data?: { folderPath?: string }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
-    invoke(channel: 'files:create-in-folder', data: { folderPath: string; fileName: string; content: string; bytes?: number[] }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number }>;
+    invoke(channel: 'files:edit-content', data: { fileId: number; content: string; bytes: number[]; expectedMtime: number }): Promise<void>;
+  invoke(channel: 'files:create-in-folder', data: { folderPath: string; fileName: string; content: string; bytes?: number[] }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number }>;
     invoke(channel: 'files:get-bytes', data: number): Promise<number[]>;
     invoke(channel: 'files:get-content', data: number): Promise<string>;
     invoke(channel: 'folders:remove-from-index', data: string): Promise<void>;

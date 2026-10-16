@@ -1,7 +1,17 @@
 <script setup lang="ts">
+import { useFilePrompts } from '~/composables/useFilePrompts'
 
-const { activeFile, addTagToFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk } = useFiles()
-const showFilePreview = useState('show-file-preview', () => true)
+const { activeFile, files, selectedFiles, addTagToFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk } = useFiles()
+const showFilePreview = useState('show-file-preview', () => false)
+const route = useRoute()
+const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
+const activeChatId = useState<string | null>('ai-active-chat', () => null)
+const ragChatId = computed(() => route.path === '/ai_assistant' ? activeChatId.value : null)
+const ragFiles = computed(() => {
+  if (route.path === '/') return selectedFiles.value
+  if (route.path === '/ai_assistant') return files.value.filter(file => attachedIds.value.includes(file.id))
+  return activeFile.value ? [activeFile.value] : []
+})
 
 const {
   messages,
@@ -19,7 +29,7 @@ const {
   cancel,
   repeatLast,
   clear,
-} = useAi(activeFile)
+} = useAi(ragFiles, ragChatId)
 const { t } = useLanguage()
 const { settings } = useSettings()
 const imagePreview = ref<string | null>(null)
@@ -37,6 +47,12 @@ const deleteMode = ref<'trash' | 'permanent'>('trash')
 
 const userQuery = ref('')
 const outputFolder = ref<string | null>(null)
+const allowFileEdits = ref(false)
+const editPermission = () => {
+  const signature = () => ragFiles.value.map(file => file.id).sort((a, b) => a - b).join(',')
+  const authorizedSelection = signature()
+  return () => allowFileEdits.value && signature() === authorizedSelection
+}
 const isModelConnecting = ref(false)
 const selectedChatModel = computed({
   get: () => activeModelConfig.value.model,
@@ -75,7 +91,7 @@ watch(() => activeFile.value?.note, (note) => {
 
 onBeforeUnmount(() => { void persistPendingNote() })
 
-const samplePrompts = computed(() => [t('promptTerms'), t('promptPrices'), t('promptTakeaways')])
+const samplePrompts = useFilePrompts(ragFiles, activeFile)
 
 watch(() => activeFile.value?.id, async (fileId) => {
   const request = ++imagePreviewRequest
@@ -103,7 +119,7 @@ const sendPrompt = async (prompt: string) => {
 const handleSubmit = async () => {
   if (
       !userQuery.value.trim() ||
-      !activeFile.value ||
+      !ragFiles.value.length ||
       isThinking.value
   ) {
     return
@@ -113,7 +129,7 @@ const handleSubmit = async () => {
 
   userQuery.value = ''
 
-  await ask(query, activeFile.value, outputFolder.value ?? undefined)
+  await ask(query, ragFiles.value, outputFolder.value ?? undefined, editPermission(), () => outputFolder.value)
 }
 
 const regenerateSummary = async () => {
@@ -121,7 +137,7 @@ const regenerateSummary = async () => {
 }
 
 const askAgain = async () => {
-  await repeatLast(activeFile.value, outputFolder.value ?? undefined)
+  await repeatLast(ragFiles.value, outputFolder.value ?? undefined, editPermission(), () => outputFolder.value)
 }
 
 const addTag = () => {
@@ -186,17 +202,17 @@ const confirmDeleteFile = async () => {
 <template>
   <aside @dragover.prevent @drop.prevent.stop
       class="flex h-full min-h-0 w-96 shrink-0 flex-col
-           overflow-hidden border-l border-gray-200
+           overflow-hidden border-l border-surface-200
            bg-white/70 backdrop-blur-md
-           dark:border-gray-800 dark:bg-gray-900/70"
+           dark:border-surface-800 dark:bg-surface-900/70"
   >
 
     <!-- Active file -->
 
     <div
         v-if="activeFile"
-        class="border-b border-gray-200 p-4
-             dark:border-gray-800"
+        class="border-b border-surface-200 p-4
+             dark:border-surface-800"
     >
       <div
           class="mb-2 flex items-center justify-between"
@@ -204,7 +220,7 @@ const confirmDeleteFile = async () => {
           <span
             class="flex items-center gap-1 text-[10px]
                  font-bold uppercase tracking-wider
-                 text-emerald-500"
+                 text-primary-500"
         >
           <Icon
               name="lucide:cpu"
@@ -215,7 +231,7 @@ const confirmDeleteFile = async () => {
         </span>
 
         <span
-            class="text-[11px] text-gray-400"
+            class="text-[11px] text-surface-400"
         >
           {{ activeFile.extension.toUpperCase() }}
           {{ t('file') }}
@@ -224,14 +240,14 @@ const confirmDeleteFile = async () => {
 
       <h2
           class="truncate text-sm font-bold
-               text-gray-900 dark:text-gray-100"
+               text-surface-900 dark:text-surface-100"
       >
         {{ activeFile.name }}
       </h2>
 
       <p
           class="mt-0.5 truncate font-mono
-               text-xs text-gray-400"
+               text-xs text-surface-400"
       >
         {{ activeFile.path }}
       </p>
@@ -239,14 +255,14 @@ const confirmDeleteFile = async () => {
       <div class="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1.5 text-xs font-medium text-emerald-700 transition hover:bg-emerald-500/20 dark:text-emerald-300"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-primary-500/10 px-2.5 py-1.5 text-xs font-medium text-primary-700 transition hover:bg-primary-500/20 dark:text-primary-300"
           @click="openSelectedFile"
         >
           <Icon name="lucide:external-link" size="14" />{{ t('openFile') }}
         </button>
         <button
           type="button"
-          class="inline-flex items-center gap-1.5 rounded-lg bg-gray-100 px-2.5 py-1.5 text-xs font-medium text-gray-700 transition hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-300 dark:hover:bg-gray-700"
+          class="inline-flex items-center gap-1.5 rounded-lg bg-surface-100 px-2.5 py-1.5 text-xs font-medium text-surface-700 transition hover:bg-surface-200 dark:bg-surface-800 dark:text-surface-300 dark:hover:bg-surface-700"
           @click="showSelectedFileInFolder"
         >
           <Icon name="lucide:folder-open" size="14" />{{ t('showInFolder') }}
@@ -272,7 +288,7 @@ const confirmDeleteFile = async () => {
           v-if="imagePreview"
           :src="imagePreview"
           :alt="activeFile.name"
-          class="mt-3 max-h-64 w-full rounded-xl border border-gray-200/70 bg-gray-50 object-contain dark:border-gray-700 dark:bg-gray-950/40"
+          class="mt-3 max-h-64 w-full rounded-xl border border-surface-200/70 bg-surface-50 object-contain dark:border-surface-700 dark:bg-surface-950/40"
       />
     </div>
 
@@ -280,16 +296,16 @@ const confirmDeleteFile = async () => {
 
     <div
         v-else
-        class="border-b border-gray-200 p-6
-             text-center dark:border-gray-800"
+        class="border-b border-surface-200 p-6
+             text-center dark:border-surface-800"
     >
       <Icon
           name="lucide:mouse-pointer-click"
           size="32"
-          class="mx-auto mb-2 text-gray-400"
+          class="mx-auto mb-2 text-surface-400"
       />
 
-      <p class="text-xs text-gray-500">
+      <p class="text-xs text-surface-500">
         {{ t('selectFile') }}
       </p>
     </div>
@@ -297,9 +313,9 @@ const confirmDeleteFile = async () => {
     <!-- Tabs -->
 
     <div
-        class="flex border-b border-gray-200
+        class="flex border-b border-surface-200
              text-xs font-medium
-             dark:border-gray-800"
+             dark:border-surface-800"
     >
       <button
           type="button"
@@ -307,8 +323,8 @@ const confirmDeleteFile = async () => {
                text-center transition-colors"
           :class="
           rightTab === 'chat'
-            ? 'border-emerald-500 font-semibold text-emerald-600 dark:text-emerald-400'
-            : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+            ? 'border-primary-500 font-semibold text-primary-600 dark:text-primary-400'
+            : 'border-transparent text-surface-500 hover:text-surface-800 dark:hover:text-surface-200'
         "
           @click="rightTab = 'chat'"
       >
@@ -321,8 +337,8 @@ const confirmDeleteFile = async () => {
                text-center transition-colors"
           :class="
           rightTab === 'summary'
-            ? 'border-emerald-500 font-semibold text-emerald-600 dark:text-emerald-400'
-            : 'border-transparent text-gray-500 hover:text-gray-800 dark:hover:text-gray-200'
+            ? 'border-primary-500 font-semibold text-primary-600 dark:text-primary-400'
+            : 'border-transparent text-surface-500 hover:text-surface-800 dark:hover:text-surface-200'
         "
           @click="rightTab = 'summary'"
       >
@@ -330,18 +346,18 @@ const confirmDeleteFile = async () => {
       </button>
     </div>
 
-      <div class="flex shrink-0 items-center gap-2 border-b border-gray-200 p-2 dark:border-gray-800">
-        <label v-if="connectionStatus === 'ok'" class="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-gray-500">
+      <div class="flex shrink-0 items-center gap-2 border-b border-surface-200 p-2 dark:border-surface-800">
+        <label v-if="connectionStatus === 'ok'" class="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-surface-500">
           <span class="shrink-0">{{ t('chatModel') }}</span>
           <AppDropdown v-model="selectedChatModel" :options="availableModels.map(value => ({ value, label: value }))" :placeholder="availableModels.length ? t('selectModel') : t('noModelsFound')" :disabled="availableModels.length === 0" class="min-w-0 flex-1" />
         </label>
-        <button v-else type="button" class="w-full rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600 transition hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800" :disabled="!isModelEnabled || isModelConnecting" @click="connectChatModel">
+        <button v-else type="button" class="w-full rounded-lg border border-surface-200 px-2.5 py-1.5 text-xs text-surface-600 transition hover:bg-surface-50 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800" :disabled="!isModelEnabled || isModelConnecting" @click="connectChatModel">
           {{ isModelConnecting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection')) }}
         </button>
       </div>
 
 
-    <div class="shrink-0 px-2 py-1"><AiOutputSettings v-model="outputFolder" /></div>
+    <div class="shrink-0 px-2 py-1"><AiOutputSettings v-model="outputFolder" v-model:allow-edits="allowFileEdits" :selected-files="ragFiles" /></div>
 
     <!-- CHAT -->
 
@@ -359,13 +375,12 @@ const confirmDeleteFile = async () => {
         <!-- Suggested prompts -->
 
         <div
-            v-if="messages.length === 0"
             class="space-y-2"
         >
           <p
               class="text-[11px] font-semibold
                    uppercase tracking-wider
-                   text-gray-400"
+                   text-surface-400"
           >
             {{ t('suggestedActions') }}
           </p>
@@ -376,15 +391,15 @@ const confirmDeleteFile = async () => {
               type="button"
               class="group flex w-full items-center
                    justify-between rounded-xl border
-                   border-gray-200 bg-gray-50 p-2.5
-                   text-left text-xs text-gray-700
+                   border-surface-200 bg-surface-50 p-2.5
+                   text-left text-xs text-surface-700
                    transition-all
-                   hover:border-emerald-500/50
-                   hover:text-emerald-500
-                   dark:border-gray-800
-                   dark:bg-gray-800/40
-                   dark:text-gray-300"
-              :disabled="!activeFile"
+                   hover:border-primary-500/50
+                   hover:text-primary-500
+                   dark:border-surface-800
+                   dark:bg-surface-800/40
+                   dark:text-surface-300"
+              :disabled="!ragFiles.length || isThinking"
               @click="sendPrompt(prompt)"
           >
             <span>
@@ -409,27 +424,28 @@ const confirmDeleteFile = async () => {
                  text-xs leading-relaxed"
             :class="
             message.sender === 'user'
-              ? 'ml-auto rounded-br-none bg-emerald-600 font-medium text-white'
-              : 'mr-auto rounded-bl-none border border-gray-200/50 bg-gray-100 text-gray-800 dark:border-gray-700/50 dark:bg-gray-800 dark:text-gray-200'
+              ? 'ml-auto rounded-br-none bg-primary-600 font-medium text-white'
+              : 'mr-auto rounded-bl-none border border-surface-200/50 bg-surface-100 text-surface-800 dark:border-surface-700/50 dark:bg-surface-800 dark:text-surface-200'
           "
         >
           <div
               v-if="message.sender === 'ai'"
               class="mb-1 flex items-center gap-1.5
-                   text-[10px] font-bold text-emerald-500"
+                   text-[10px] font-bold text-primary-500"
           >
             <Icon
                 name="lucide:bot"
                 size="12"
             />
 
-            {{ settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
+            {{ message.provider === 'comfy' ? 'Comfy Desktop' : settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
+          <span v-if="message.mediaGeneration" class="rounded border border-current/20 px-1.5 py-0.5" :class="message.mediaGeneration.execution === 'local' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">{{ t(message.mediaGeneration.execution === 'local' ? 'comfyLocalWorkflow' : message.mediaGeneration.execution === 'cloud' ? 'comfyCloudWorkflow' : 'comfyUnknownWorkflow') }}</span>
           </div>
 
-          <p class="whitespace-pre-line">
-            {{ message.text }}
-          </p>
-          <AiCreatedFiles :files="message.createdFiles ?? []" />
+          <ChatMessageContent :text="message.text" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
+          <AiCreatedFiles :files="message.attachments ?? []" :title="t('chatAttachments')" />
+        <AiCreatedFiles :files="message.createdFiles ?? []" />
+        <AiCreatedFiles :files="message.editedFiles ?? []" :title="t('editedDocuments')" />
         </div>
 
         <!-- Thinking -->
@@ -441,15 +457,15 @@ const confirmDeleteFile = async () => {
       <!-- Input -->
 
       <div
-          class="border-t border-gray-200 bg-white
-               p-3 dark:border-gray-800
-               dark:bg-gray-900"
+          class="border-t border-surface-200 bg-white
+               p-3 dark:border-surface-800
+               dark:bg-surface-900"
       >
         <div v-if="isThinking || lastQuestion" class="mb-2 flex justify-end gap-2">
           <button
               v-if="lastQuestion && !isThinking"
               type="button"
-              class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-[11px] text-gray-600 transition hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+              class="inline-flex items-center gap-1.5 rounded-lg border border-surface-200 px-2.5 py-1.5 text-[11px] text-surface-600 transition hover:bg-surface-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800"
               @click="askAgain"
           >
             <Icon name="lucide:rotate-ccw" size="13" />
@@ -473,36 +489,36 @@ const confirmDeleteFile = async () => {
               v-model="userQuery"
               type="text"
               :placeholder="
-              activeFile
+              ragFiles.length
                 ? t('askFile')
                 : t('selectFileToAsk')
             "
               :disabled="
-              !activeFile ||
+              !ragFiles.length ||
               isThinking
             "
               class="h-10 min-w-0 flex-1 rounded-xl border
                    border-transparent
-                   bg-gray-100 px-3
+                   bg-surface-100 px-3
                    text-xs outline-none
                    transition
-                   focus:border-emerald-500
+                   focus:border-primary-500
                    disabled:opacity-50
-                   dark:bg-gray-800"
+                   dark:bg-surface-800"
           />
 
           <button
               type="submit"
               :disabled="
               !userQuery.trim() ||
-              !activeFile ||
+              !ragFiles.length ||
               isThinking
             "
               class="flex h-10 w-10 shrink-0
                    items-center justify-center rounded-xl
-                   bg-emerald-500
+                   bg-primary-500
                    text-white transition
-                   hover:bg-emerald-600
+                   hover:bg-primary-600
                    disabled:opacity-40"
           >
             <Icon
@@ -528,18 +544,18 @@ const confirmDeleteFile = async () => {
         <section>
           <h4
               class="mb-2 text-xs font-bold
-                   uppercase text-gray-400"
+                   uppercase text-surface-400"
           >
             {{ t('executiveSummary') }}
           </h4>
 
           <div
-              class="rounded-xl border border-gray-200
-                   bg-gray-50 p-3 text-xs
-                   leading-relaxed text-gray-700
-                   dark:border-gray-800
-                   dark:bg-gray-800/50
-                   dark:text-gray-300"
+              class="rounded-xl border border-surface-200
+                   bg-surface-50 p-3 text-xs
+                   leading-relaxed text-surface-700
+                   dark:border-surface-800
+                   dark:bg-surface-800/50
+                   dark:text-surface-300"
           >
 
             <AiGenerationFeedback v-if="isThinking && generationFeedback" :feedback="generationFeedback" />
@@ -548,7 +564,7 @@ const confirmDeleteFile = async () => {
             <div class="mt-3 flex flex-wrap gap-2">
               <button
                   type="button"
-                  class="inline-flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-2.5 py-1.5 font-medium text-emerald-600 transition hover:bg-emerald-500/20 disabled:opacity-40 dark:text-emerald-400"
+                  class="inline-flex items-center gap-1.5 rounded-lg bg-primary-500/10 px-2.5 py-1.5 font-medium text-primary-600 transition hover:bg-primary-500/20 disabled:opacity-40 dark:text-primary-400"
                   :disabled="isThinking"
                   @click="regenerateSummary"
               >
@@ -573,7 +589,7 @@ const confirmDeleteFile = async () => {
         <section>
           <h4
               class="mb-2 mt-4 text-xs font-bold
-                   uppercase text-gray-400"
+                   uppercase text-surface-400"
           >
             {{ t('attachedNote') }}
           </h4>
@@ -582,13 +598,13 @@ const confirmDeleteFile = async () => {
               v-model="activeFile.note"
               :placeholder="t('addNote')"
               class="h-28 w-full resize-none rounded-xl
-                   border border-gray-200
-                   bg-gray-100 p-3 text-xs
+                   border border-surface-200
+                   bg-surface-100 p-3 text-xs
                    outline-none transition
                    focus:ring-2
-                   focus:ring-emerald-500
-                   dark:border-gray-700
-                   dark:bg-gray-800"
+                   focus:ring-primary-500
+                   dark:border-surface-700
+                   dark:bg-surface-800"
           />
         </section>
 
@@ -597,7 +613,7 @@ const confirmDeleteFile = async () => {
         <section>
           <h4
               class="mb-2 mt-4 text-xs font-bold
-                   uppercase text-gray-400"
+                   uppercase text-surface-400"
           >
             {{ t('fileTags') }}
           </h4>
@@ -607,11 +623,11 @@ const confirmDeleteFile = async () => {
             <span
                 v-for="tag in activeFile.tags"
                 :key="tag"
-                class="rounded-lg bg-gray-200
+                class="rounded-lg bg-surface-200
                      px-2.5 py-1 text-xs
-                     text-gray-700
-                     dark:bg-gray-800
-                     dark:text-gray-300"
+                     text-surface-700
+                     dark:bg-surface-800
+                     dark:text-surface-300"
             >
               #{{ tag }}
             </span>
@@ -620,12 +636,12 @@ const confirmDeleteFile = async () => {
                 v-if="!isTagInputOpen"
                 type="button"
                 class="rounded-lg border
-                     border-dashed border-gray-300
+                     border-dashed border-surface-300
                      px-2.5 py-1 text-xs
-                     text-gray-400 transition
-                     hover:text-gray-600
-                     dark:border-gray-700
-                     dark:hover:text-gray-200"
+                     text-surface-400 transition
+                     hover:text-surface-600
+                     dark:border-surface-700
+                     dark:hover:text-surface-200"
                 @click="addTag"
             >
               + {{ t('addTag') }}
@@ -637,10 +653,10 @@ const confirmDeleteFile = async () => {
                 autofocus
                 maxlength="40"
                 :placeholder="t('tagPlaceholder')"
-                class="w-28 rounded-lg border border-gray-300 bg-white px-2 py-1 text-xs outline-none focus:border-emerald-500 dark:border-gray-700 dark:bg-gray-900"
+                class="w-28 rounded-lg border border-surface-300 bg-white px-2 py-1 text-xs outline-none focus:border-primary-500 dark:border-surface-700 dark:bg-surface-900"
               >
-              <button type="submit" class="rounded-lg bg-emerald-600 px-2 py-1 text-xs text-white">{{ t('saveTag') }}</button>
-              <button type="button" class="rounded-lg px-1.5 py-1 text-xs text-gray-500" @click="isTagInputOpen = false; newTag = ''">{{ t('cancel') }}</button>
+              <button type="submit" class="rounded-lg bg-primary-600 px-2 py-1 text-xs text-white">{{ t('saveTag') }}</button>
+              <button type="button" class="rounded-lg px-1.5 py-1 text-xs text-surface-500" @click="isTagInputOpen = false; newTag = ''">{{ t('cancel') }}</button>
             </form>
 
           </div>
@@ -652,17 +668,17 @@ const confirmDeleteFile = async () => {
       <div
           v-else
           class="py-8 text-center text-xs
-               text-gray-400"
+               text-surface-400"
       >
         {{ t('noActiveFile') }}
       </div>
 
     </div>
 
-    <div class="flex shrink-0 justify-end border-t border-gray-200 p-2 dark:border-gray-800">
+    <div class="flex shrink-0 justify-end border-t border-surface-200 p-2 dark:border-surface-800">
       <button
         type="button"
-        class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+        class="rounded-lg p-2 text-surface-500 transition hover:bg-surface-100 hover:text-surface-700 dark:text-surface-400 dark:hover:bg-surface-800 dark:hover:text-surface-200"
         :title="t('hidePreview')"
         :aria-label="t('hidePreview')"
         @click="showFilePreview = false"
@@ -675,30 +691,30 @@ const confirmDeleteFile = async () => {
   <Teleport to="body">
     <div
       v-if="isDeleteDialogOpen"
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-gray-950/60 p-4 backdrop-blur-sm"
+      class="fixed inset-0 z-[100] flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm"
       @click.self="!isDeleting && (isDeleteDialogOpen = false)"
     >
       <section
         role="dialog"
         aria-modal="true"
         aria-labelledby="delete-file-title"
-        class="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl dark:border-gray-700 dark:bg-gray-900"
+        class="w-full max-w-md rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
       >
         <div class="mb-4 flex items-start gap-3">
           <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-500">
             <Icon name="lucide:triangle-alert" size="20" />
           </div>
           <div class="min-w-0">
-            <h2 id="delete-file-title" class="text-base font-semibold text-gray-900 dark:text-gray-100">{{ deleteDialogAction === 'disk' ? t('deleteDialogTitle') : t('removeFromIndexTitle') }}</h2>
-            <p class="mt-1 break-words text-sm text-gray-500">{{ activeFile?.name }}</p>
+            <h2 id="delete-file-title" class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ deleteDialogAction === 'disk' ? t('deleteDialogTitle') : t('removeFromIndexTitle') }}</h2>
+            <p class="mt-1 break-words text-sm text-surface-500">{{ activeFile?.name }}</p>
             <template v-if="deleteDialogAction === 'disk'">
-              <p class="mt-1 text-xs text-gray-500">{{ t('deleteDialogMessage') }}</p>
-              <label class="mt-3 block text-xs font-medium text-gray-700 dark:text-gray-300">{{ t('deleteMode') }}
+              <p class="mt-1 text-xs text-surface-500">{{ t('deleteDialogMessage') }}</p>
+              <label class="mt-3 block text-xs font-medium text-surface-700 dark:text-surface-300">{{ t('deleteMode') }}
                 <AppDropdown v-model="deleteMode" :options="[{ value: 'trash', label: t('moveToTrash') }, { value: 'permanent', label: t('deletePermanently') }]" class="mt-1 w-full" />
               </label>
               <p v-if="deleteMode === 'permanent'" class="mt-2 text-xs text-rose-500">{{ t('permanentDeleteWarning') }}</p>
             </template>
-            <p v-else class="mt-1 text-xs text-gray-500">{{ t('removeFromIndexMessage') }}</p>
+            <p v-else class="mt-1 text-xs text-surface-500">{{ t('removeFromIndexMessage') }}</p>
           </div>
         </div>
         <p v-if="fileActionError" class="mt-3 text-xs text-rose-500" role="alert">{{ fileActionError }}</p>
@@ -706,7 +722,7 @@ const confirmDeleteFile = async () => {
         <div class="mt-5 flex justify-end gap-2">
           <button
             type="button"
-            class="rounded-xl border border-gray-200 px-3.5 py-2 text-xs font-medium text-gray-600 transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+            class="rounded-xl border border-surface-200 px-3.5 py-2 text-xs font-medium text-surface-600 transition hover:bg-surface-100 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800"
             :disabled="isDeleting"
             @click="isDeleteDialogOpen = false"
           >{{ t('cancel') }}</button>

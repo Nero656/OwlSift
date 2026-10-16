@@ -67,14 +67,14 @@ const icon = computed(() => {
   }
 })
 
-const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purple-500' : props.file.extension === 'pdf' ? 'bg-red-500/10 text-red-500' : props.file.extension === 'docx' ? 'bg-blue-500/10 text-blue-500' : props.file.extension === 'md' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-gray-500/10 text-gray-500')
+const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purple-500' : props.file.extension === 'pdf' ? 'bg-red-500/10 text-red-500' : props.file.extension === 'docx' ? 'bg-blue-500/10 text-blue-500' : props.file.extension === 'md' ? 'bg-primary-500/10 text-primary-500' : 'bg-surface-500/10 text-surface-500')
 </script>
 
 <template>
-  <article ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-emerald-500 bg-emerald-500/10 shadow-sm ring-1 ring-inset ring-emerald-500/40' : 'border-gray-200/80 bg-white hover:border-gray-300 hover:shadow-sm dark:border-gray-800 dark:bg-gray-800/50 dark:hover:border-gray-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
+  <article ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-primary-500 bg-primary-500/10 shadow-sm ring-1 ring-inset ring-primary-500/40' : 'border-surface-200/80 bg-white hover:border-surface-300 hover:shadow-sm dark:border-surface-800 dark:bg-surface-800/50 dark:hover:border-surface-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
     <div class="file-card-body" :class="layout === 'grid' ? 'flex h-full min-w-0 flex-col gap-3' : 'flex min-w-0 flex-wrap items-start gap-3'">
       <div class="file-card-main" :class="layout === 'grid' ? 'flex min-w-0 flex-1 flex-col gap-3' : 'flex min-w-0 flex-[1_1_14rem] items-start gap-3'">
-        <div v-if="thumbnail && settings.showThumbnails" class="h-10 w-10 shrink-0 overflow-hidden rounded-full border border-gray-200 bg-gray-100 ring-2 ring-white dark:border-gray-700 dark:bg-gray-900 dark:ring-gray-800">
+        <div v-if="thumbnail && settings.showThumbnails" class="h-10 w-10 shrink-0 overflow-hidden rounded-full border border-surface-200 bg-surface-100 ring-2 ring-white dark:border-surface-700 dark:bg-surface-900 dark:ring-surface-800">
           <img :src="thumbnail" :alt="file.name" loading="lazy" class="h-full w-full object-cover" @error="thumbnail = undefined">
         </div>
         <div v-else class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-xs font-bold" :class="badgeClass">
@@ -83,20 +83,20 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
 
         <div class="file-card-content min-w-0 flex-1">
           <div class="flex min-w-0 flex-col items-start gap-1.5">
-            <h3 class="w-full min-w-0 text-sm font-semibold text-gray-900 transition-colors group-hover:text-emerald-500 dark:text-gray-100" :class="layout === 'grid' ? 'break-words [overflow-wrap:anywhere]' : 'truncate'">{{ file.name }}</h3>
+            <h3 class="w-full min-w-0 text-sm font-semibold text-surface-900 transition-colors group-hover:text-primary-500 dark:text-surface-100" :class="layout === 'grid' ? 'break-words [overflow-wrap:anywhere]' : 'truncate'">{{ file.name }}</h3>
             <div v-if="file.tags.length" class="flex min-w-0 gap-1.5" :class="layout === 'grid' ? 'w-full flex-nowrap overflow-x-auto' : 'w-full flex-wrap'">
-              <span v-for="tag in file.tags" :key="tag" class="shrink-0 rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">#{{ tag }}</span>
+              <span v-for="tag in file.tags" :key="tag" class="shrink-0 rounded-full bg-surface-100 px-2 py-0.5 text-[10px] font-medium text-surface-500 dark:bg-surface-700 dark:text-surface-400">#{{ tag }}</span>
             </div>
           </div>
-          <p class="mt-0.5 truncate font-mono text-xs text-gray-400">{{ file.path }}</p>
-          <div class="mt-2.5 max-h-16 overflow-hidden break-words rounded-lg border border-gray-100 bg-gray-50 p-2.5 text-xs leading-relaxed text-gray-600 [overflow-wrap:anywhere] dark:border-gray-800 dark:bg-gray-900/60 dark:text-gray-300">{{ file.snippet }}</div>
-          <button v-if="!hideSummary" type="button" class="file-card-summary mt-2 inline-flex max-w-full items-center gap-1 rounded-lg bg-emerald-500/10 px-2.5 py-1 text-left text-[11px] font-medium leading-tight text-emerald-600 transition hover:bg-emerald-500/20 dark:text-emerald-400" @click.stop="emit('summary', file)">
+          <p class="mt-0.5 truncate font-mono text-xs text-surface-400">{{ file.path }}</p>
+          <div class="mt-2.5 max-h-16 overflow-hidden break-words rounded-lg border border-surface-100 bg-surface-50 p-2.5 text-xs leading-relaxed text-surface-600 [overflow-wrap:anywhere] dark:border-surface-800 dark:bg-surface-900/60 dark:text-surface-300">{{ file.snippet }}</div>
+          <button v-if="!hideSummary" type="button" class="file-card-summary mt-2 inline-flex max-w-full items-center gap-1 rounded-lg bg-primary-500/10 px-2.5 py-1 text-left text-[11px] font-medium leading-tight text-primary-600 transition hover:bg-primary-500/20 dark:text-primary-400" @click.stop="emit('summary', file)">
             <Icon name="lucide:sparkles" size="12" class="shrink-0" /><span class="min-w-0 break-words">{{ t('aiSummary') }}</span>
           </button>
         </div>
       </div>
 
-      <div class="file-card-meta" :class="layout === 'grid' ? 'flex w-full shrink-0 items-center justify-between border-t border-gray-100 pt-2 text-[11px] text-gray-400 dark:border-gray-700' : 'flex shrink-0 flex-col items-end justify-between self-stretch text-right text-[11px] text-gray-400'">
+      <div class="file-card-meta" :class="layout === 'grid' ? 'flex w-full shrink-0 items-center justify-between border-t border-surface-100 pt-2 text-[11px] text-surface-400 dark:border-surface-700' : 'flex shrink-0 flex-col items-end justify-between self-stretch text-right text-[11px] text-surface-400'">
         <div :class="layout === 'grid' ? 'flex flex-col items-start' : ''"><div>{{ file.size }}</div><div>{{ file.mtime }}</div></div>
       </div>
     </div>

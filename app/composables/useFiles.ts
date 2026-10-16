@@ -1,3 +1,4 @@
+import { isHiddenPath } from '../../src/utils/fileVisibility'
 import type { IndexedFolder, LocalFile } from '../types/file'
 import { createDocumentBlob, extractDocumentText, storeDocumentBlob } from '../utils/documents'
 import { creatableFileTypes, defaultFileTemplate } from './useFileTypes'
@@ -17,7 +18,7 @@ interface IndexedFileRecord {
 
 const browserStorageKey = 'localmind-browser-files'
 const browserFoldersKey = 'localmind-browser-folders'
-const textExtensions = new Set(['txt', 'md', 'markdown', 'csv', 'json', 'xml', 'html', 'htm', 'js', 'ts', 'vue', 'css', 'scss', 'yaml', 'yml', 'log', 'sql', 'py', 'java', 'c', 'cpp', 'h', 'sh'])
+const textExtensions = new Set(['tsv', 'txt', 'md', 'markdown', 'csv', 'json', 'xml', 'html', 'htm', 'js', 'ts', 'vue', 'css', 'scss', 'yaml', 'yml', 'log', 'sql', 'py', 'java', 'c', 'cpp', 'h', 'sh'])
 const defaultBrowserFolderPath = 'Browser/Workspace'
 
 function formatFileSize(bytes: number): string {
@@ -62,6 +63,14 @@ async function createImageThumbnail(file: File): Promise<string | undefined> {
 }
 
 export const useFiles = () => {
+  const { settings } = useSettings()
+  const excludedBySettings = (path: string) => !settings.value.showSystemFiles && isHiddenPath(path)
+  const excludedBrowserFiles = useState<LocalFile[]>('excluded-browser-files', () => [])
+  const excludedBrowserFolders = useState<IndexedFolder[]>('excluded-browser-folders', () => [])
+  const browserVisibilityMode = useState<boolean | null>('browser-system-file-visibility', () => null)
+  const syncSystemFilesPreference = async () => {
+    if (isDesktop()) await window.electron.invoke('files:set-system-visibility', settings.value.showSystemFiles)
+  }
   const files = useState<LocalFile[]>('files', () => [])
   const folders = useState<IndexedFolder[]>('indexed-folders', () => [])
   const searchResults = useState<LocalFile[] | null>('file-search-results', () => null)
@@ -71,7 +80,9 @@ export const useFiles = () => {
   const selectedFolder = useState<string | null>('selected-folder', () => null)
   const sortBy = useState('file-sort', () => 'relevance')
   const activeFile = useState<LocalFile | null>('active-file', () => null)
-  const showFilePreview = useState('show-file-preview', () => true)
+  const selectedFileIds = useState<number[]>('workspace-selected-file-ids', () => [])
+  const selectedFiles = computed(() => files.value.filter(file => selectedFileIds.value.includes(file.id)))
+  const showFilePreview = useState('show-file-preview', () => false)
   const maxFilesPerFolder = useState('max-files-per-folder', () => 1000)
   const browserFilesLoaded = useState('browser-files-loaded', () => false)
   const fileDialogFolder = useState<string | null>('file-dialog-folder', () => null)
@@ -80,8 +91,8 @@ export const useFiles = () => {
 
   const saveBrowserState = () => {
     if (!import.meta.client || isDesktop()) return
-    localStorage.setItem(browserStorageKey, JSON.stringify(files.value))
-    localStorage.setItem(browserFoldersKey, JSON.stringify(folders.value.map(({ name, path }) => ({ name, path }))))
+    localStorage.setItem(browserStorageKey, JSON.stringify([...files.value, ...excludedBrowserFiles.value]))
+    localStorage.setItem(browserFoldersKey, JSON.stringify([...folders.value, ...excludedBrowserFolders.value].map(({ name, path }) => ({ name, path }))))
   }
 
   const refreshFolderCounts = () => {
@@ -135,14 +146,17 @@ export const useFiles = () => {
 
   const loadIndex = async () => {
     if (!isDesktop()) {
-      if (browserFilesLoaded.value) return
+      if (browserFilesLoaded.value && browserVisibilityMode.value === settings.value.showSystemFiles) return
       try {
         const storedFiles = JSON.parse(localStorage.getItem(browserStorageKey) ?? '[]')
-        files.value = Array.isArray(storedFiles) ? storedFiles : []
+        const allFiles: LocalFile[] = Array.isArray(storedFiles) ? storedFiles : []
+        excludedBrowserFiles.value = allFiles.filter(file => excludedBySettings(file.path))
+        files.value = allFiles.filter(file => !excludedBySettings(file.path))
         const storedFolders = JSON.parse(localStorage.getItem(browserFoldersKey) ?? '[]') as Array<{ name: string; path: string }>
         folders.value = Array.isArray(storedFolders)
-          ? storedFolders.map(folder => ({ ...folder, count: 0 }))
+          ? storedFolders.filter(folder => !excludedBySettings(folder.path)).map(folder => ({ ...folder, count: 0 }))
           : []
+        excludedBrowserFolders.value = Array.isArray(storedFolders) ? storedFolders.filter(folder => excludedBySettings(folder.path)).map(folder => ({ ...folder, count: 0 })) : []
         if (!folders.value.length && files.value.length) {
           folders.value = [{ name: 'Workspace', path: defaultBrowserFolderPath, count: 0 }]
         }
@@ -152,16 +166,24 @@ export const useFiles = () => {
         folders.value = []
       }
       browserFilesLoaded.value = true
+      browserVisibilityMode.value = settings.value.showSystemFiles
+      selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
+      if (activeFile.value) activeFile.value = files.value.find(file => file.id === activeFile.value?.id) ?? null
+      if (selectedFolder.value && !folders.value.some(folder => folder.name === selectedFolder.value)) selectedFolder.value = null
       return
     }
+    await syncSystemFilesPreference()
     const [records, indexedFolders] = await Promise.all([window.electron.invoke('files:list'), window.electron.invoke('files:folders')])
     files.value = records.map(toLocalFile)
     folders.value = indexedFolders
+    selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
+    if (selectedFolder.value && !folders.value.some(folder => folder.name === selectedFolder.value)) selectedFolder.value = null
     if (activeFile.value) activeFile.value = files.value.find(file => file.path === activeFile.value?.path) ?? null
   }
 
   const addFolder = async () => {
     if (isDesktop()) {
+      await syncSystemFilesPreference()
       const result = await window.electron.invoke('files:choose-and-index', { maxFiles: maxFilesPerFolder.value })
       if (result) await loadIndex()
       return result
@@ -171,11 +193,13 @@ export const useFiles = () => {
     if (picker) {
       try {
         const directory = await picker()
+        if (excludedBySettings(directory.name)) throw new Error('Hidden folders cannot be indexed')
         const folder = createVirtualFolder(directory.name)
         let indexedCount = 0
         let skippedCount = 0
         const visit = async (handle: FileSystemDirectoryHandle, prefix: string) => {
-          for await (const [name, entry] of handle.entries()) {
+          for await (const [name, entry] of (handle as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries()) {
+            if (excludedBySettings(name)) { skippedCount++; continue }
             if (indexedCount >= maxFilesPerFolder.value) {
               skippedCount += 1
               continue
@@ -206,6 +230,7 @@ export const useFiles = () => {
   }
 
   const addBrowserFile = async (source: File, folderPath?: string, indexedText?: string) => {
+    if (excludedBySettings(source.webkitRelativePath || source.name) || (folderPath && excludedBySettings(folderPath))) throw new Error('Hidden files cannot be indexed')
     const known = folderPath ? folders.value.find(folder => folder.path === folderPath || folder.name === folderPath) : undefined
     const targetPath = known?.path ?? folderPath ?? ensureFolder().path
     const extension = source.name.includes('.') ? source.name.split('.').pop()?.toLowerCase() ?? '' : ''
@@ -214,7 +239,7 @@ export const useFiles = () => {
       try { content = await extractDocumentText(source); if (!content.trim()) contentError = 'No extractable text (scanned or empty document)' }
       catch (error) { contentError = error instanceof Error ? error.message : String(error) }
     } else if (indexedText === undefined && (source.type.startsWith('text/') || textExtensions.has(extension))) content = (await source.text()).slice(0, 120000)
-    if (['pdf', 'docx', 'odt', 'rtf'].includes(extension)) await storeDocumentBlob(targetPath + '/' + source.name, source)
+    await storeDocumentBlob(targetPath + '/' + source.name, source)
     const thumbnail = await createImageThumbnail(source)
     const file: LocalFile = {
       id: Date.now() + Math.floor(Math.random() * 1000),
@@ -239,6 +264,7 @@ export const useFiles = () => {
   }
 
   const importDroppedFiles = async (sources: File[], folderPath?: string) => {
+    await syncSystemFilesPreference()
     const added: LocalFile[] = []
     let skipped = 0
     const target = folderPath ?? folders.value.find(folder => folder.name === selectedFolder.value)?.path
@@ -266,6 +292,7 @@ export const useFiles = () => {
   const addOneFile = async (folderPath?: string) => {
     const folder = folderPath || folders.value.find(item => item.name === selectedFolder.value)?.path
     if (isDesktop()) {
+      await syncSystemFilesPreference()
       const result = await window.electron.invoke('files:choose-and-index-file', { folderPath: folder })
       if (result) await loadIndex()
       return result
@@ -303,7 +330,8 @@ export const useFiles = () => {
     })
   }
 
-  const createBrowserFile = async (baseName: string, extension: string, content: string, folderPath?: string, saveCopy = true) => {
+  const createBrowserFile = async (baseName: string, extension: string, content: string, folderPath?: string, saveCopy = true, writeAllowed?: () => boolean) => {
+    if (folderPath && !folders.value.some(folder => folder.path === folderPath)) throw new Error('Workspace not found')
     const folder = ensureFolder(folderPath)
     const safeName = sanitizeFileName(baseName)
     const cleanExtension = extension.replace(/^\./, '').toLowerCase()
@@ -322,6 +350,7 @@ export const useFiles = () => {
       catch (error: any) { if (error?.name === 'AbortError') return null; throw error }
     }
     const blob = await createDocumentBlob(cleanExtension, body, mime)
+    if (writeAllowed && !writeAllowed()) throw new Error('File creation permission was revoked')
 
     if (isDesktop()) {
       const result = await window.electron.invoke('files:create-in-folder', {
@@ -358,6 +387,54 @@ export const useFiles = () => {
     return addBrowserFile(new File([blob], name, { type: mime, lastModified: Date.now() }), folder.path, body)
   }
 
+  const saveGeneratedMedia = async (blob: Blob, baseName: string, folderPath: string): Promise<LocalFile> => {
+    const folder = folders.value.find(folder => folder.path === folderPath)
+    if (!folder) throw new Error('Workspace not found')
+    if (!blob.size || blob.size > 30 * 1024 * 1024) throw new Error('Invalid generated image size')
+    const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer())
+    const ascii = (start: number, end: number) => String.fromCharCode(...head.slice(start, end))
+    const extension = head[0] === 0x89 && ascii(1, 4) === 'PNG' ? 'png' : head[0] === 0xff && head[1] === 0xd8 ? 'jpg' : ascii(0, 3) === 'GIF' ? 'gif' : ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WEBP' ? 'webp' : ascii(0, 2) === 'BM' ? 'bmp' : ascii(4, 8) === 'ftyp' && ['avif', 'avis'].includes(ascii(8, 12)) ? 'avif' : ''
+    if (!extension) throw new Error('The workflow output is not a supported raster image')
+    const name = sanitizeFileName(baseName) + '.' + extension
+    const portable = (value: string) => value.replace(/\\/g, '/')
+    if (files.value.filter(file => portable(file.path).startsWith(portable(folder.path) + '/')).length >= maxFilesPerFolder.value) throw new Error('Folder limit reached')
+    if (files.value.some(file => portable(file.path) === portable(folder.path + '/' + name))) throw new Error('File already exists')
+    if (isDesktop()) {
+      await window.electron.invoke('files:create-in-folder', { folderPath: folder.path, fileName: name, content: '', bytes: Array.from(new Uint8Array(await blob.arrayBuffer())) })
+      await loadIndex()
+      const saved = files.value.find(file => portable(file.path) === portable(folder.path + '/' + name))
+      if (!saved) throw new Error('Generated file not found in index')
+      return saved
+    }
+    const mime = extension === 'jpg' ? 'image/jpeg' : 'image/' + extension
+    return addBrowserFile(new File([blob], name, { type: mime, lastModified: Date.now() }), folder.path, '')
+  }
+
+  const editIndexedFile = async (fileId: number, content: string, expectedMtime: number, isAllowed: () => boolean) => {
+    if (!isAllowed()) throw new Error('File editing permission was revoked')
+    const current = files.value.find(file => file.id === fileId)
+    if (!current || isHiddenPath(current.path)) throw new Error('Selected file is no longer available')
+    if (typeof content !== 'string' || content.length > 2000000) throw new Error('Invalid document edit')
+    if ((current.mtimeValue ?? 0) !== expectedMtime) throw new Error('File changed while the model was responding')
+    const type = creatableFileTypes.find(type => type.extension === current.extension)
+    if (!type && !textExtensions.has(current.extension)) throw new Error('This file format cannot be edited')
+    const blob = await createDocumentBlob(current.extension, content, type?.mime ?? 'text/plain;charset=utf-8')
+    if (!isAllowed()) throw new Error('File editing permission was revoked')
+    if (isDesktop()) {
+      await window.electron.invoke('files:edit-content', { fileId, content, bytes: Array.from(new Uint8Array(await blob.arrayBuffer())), expectedMtime })
+      await loadIndex()
+      const updated = files.value.find(file => file.id === fileId)
+      if (updated) { updated.content = content; updated.summary = ''; updated.contentError = undefined }
+    } else {
+      // Browser imports are project copies. No disk access is requested or implied.
+      await storeDocumentBlob(current.path, blob)
+      const mtimeValue = Date.now()
+      updateBrowserFile(fileId, file => ({ ...file, content, snippet: content.slice(0, 240), summary: '', contentError: undefined, size: formatFileSize(blob.size), mtimeValue, mtime: new Date(mtimeValue).toLocaleDateString() }))
+    }
+    if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
+    return files.value.find(file => file.id === fileId)!
+  }
+
   const removeIndexedFolder = async (folderPath: string) => {
     if (isDesktop()) {
       await window.electron.invoke('folders:remove-from-index', folderPath)
@@ -366,6 +443,8 @@ export const useFiles = () => {
       return
     }
     files.value = files.value.filter(file => file.path !== folderPath && !file.path.startsWith(`${folderPath}/`))
+    excludedBrowserFiles.value = excludedBrowserFiles.value.filter(file => file.path !== folderPath && !file.path.startsWith(`${folderPath}/`))
+    excludedBrowserFolders.value = excludedBrowserFolders.value.filter(folder => folder.path !== folderPath && !folder.path.startsWith(`${folderPath}/`))
     folders.value = folders.value.filter(folder => folder.path !== folderPath)
     if (folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) selectedFolder.value = null
     if (activeFile.value && (activeFile.value.path === folderPath || activeFile.value.path.startsWith(`${folderPath}/`))) activeFile.value = null
@@ -407,6 +486,24 @@ export const useFiles = () => {
     await window.electron.invoke('files:set-note', { fileId, note })
     const update = (file: LocalFile) => file.id === fileId ? { ...file, note } : file
     files.value = files.value.map(update); if (activeFile.value?.id === fileId) activeFile.value = update(activeFile.value)
+  }
+
+  const getIndexedFileBlob = async (fileId: number): Promise<Blob> => {
+    const file = files.value.find(item => item.id === fileId)
+    if (!file) throw new Error('File is no longer available in this workspace')
+    const type = creatableFileTypes.find(type => type.extension === file.extension)
+    const imageTypes: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif', svg: 'image/svg+xml', ico: 'image/x-icon', tif: 'image/tiff', tiff: 'image/tiff' }
+    const mime = imageTypes[file.extension] ?? type?.mime ?? 'application/octet-stream'
+    if (isDesktop()) {
+      const bytes = await window.electron.invoke('files:get-bytes', fileId)
+      return new Blob([new Uint8Array(bytes)], { type: mime })
+    }
+    const stored = await storeDocumentBlob(file.path)
+    if (stored) return stored
+    if (file.content !== undefined && (type || textExtensions.has(file.extension))) {
+      return createDocumentBlob(file.extension, file.content, type?.mime ?? 'text/plain;charset=utf-8')
+    }
+    throw new Error('Original file is not stored. Import the file again to enable downloads.')
   }
 
   const openIndexedFile = async (fileId: number) => {
@@ -459,6 +556,7 @@ export const useFiles = () => {
   const filteredFiles = computed(() => {
     const source = searchQuery.value.trim() && searchResults.value !== null ? searchResults.value : files.value
     return source.filter(file => {
+      if (excludedBySettings(file.path)) return false
       const matchesType = !selectedType.value || file.extension === selectedType.value
       const matchesTag = !selectedTag.value || file.tags.includes(selectedTag.value)
       const folderPath = folders.value.find(folder => folder.name === selectedFolder.value)?.path
@@ -479,9 +577,9 @@ export const useFiles = () => {
   }
 
   return {
-    importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, filteredFiles,
-    selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, createVirtualFolder, removeIndexedFolder,
-    addTagToFile, removeTagFromFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles,
+    importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
+    selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
+    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles,
     fileDialogFolder, isCreateFileOpen, openCreateFileDialog,
   }
 }

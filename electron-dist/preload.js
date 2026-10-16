@@ -7,11 +7,15 @@ const allowedSendChannels = [
     'app:close'
 ];
 const allowedInvokeChannels = [
+    'comfy:request',
     'app:open-donation',
+    'app:open-ai-doc',
+    'app:open-external',
     'files:import-drop',
     'app:get-version',
     'db:get-status',
     'files:list',
+    'files:set-system-visibility',
     'files:add-tag',
     'files:remove-tag',
     'files:set-note',
@@ -25,6 +29,7 @@ const allowedInvokeChannels = [
     'files:choose-and-index',
     'files:choose-and-index-file',
     'files:create-in-folder',
+    'files:edit-content',
     'files:get-content',
     'files:get-bytes',
     'folders:remove-from-index'

@@ -7,7 +7,7 @@ if [ ! -f "package.json" ]; then
   echo "→ Создаём package.json..."
   cat > package.json <<'JSON'
 {
-  "name": "vue3app",
+  "name": "owlsift",
   "private": true,
   "version": "1.0.0",
   "main": "dist/main.js",
@@ -113,7 +113,7 @@ if [ ! -f "app/pages/index.vue" ]; then
   cat > app/pages/index.vue <<'VUE'
 <template>
   <div style="padding:2rem;font-family:system-ui">
-    <h1>AI Client</h1>
+    <h1>OwlSift</h1>
     <NuxtLink to="/settings">Настройки</NuxtLink>
   </div>
 </template>

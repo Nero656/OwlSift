@@ -49,13 +49,13 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="border-t border-gray-200 p-3 dark:border-gray-800">
-    <div class="rounded-xl border border-gray-200/50 bg-gray-100/80 p-3 dark:border-gray-700/50 dark:bg-gray-800/50">
+  <div class="border-t border-surface-200 p-3 dark:border-surface-800">
+    <div class="rounded-xl border border-surface-200/50 bg-surface-100/80 p-3 dark:border-surface-700/50 dark:bg-surface-800/50">
       <div class="mb-1 flex items-center justify-between text-xs font-semibold">
-        <span>{{ isElectron ? 'SQLite FTS5' : 'LocalMind' }}</span>
+        <span>{{ isElectron ? 'SQLite FTS5' : 'OwlSift' }}</span>
         <span
           class="text-[10px]"
-          :class="connected ? 'text-emerald-500' : 'text-rose-500'"
+          :class="connected ? 'text-primary-500' : 'text-rose-500'"
           role="status"
           aria-live="polite"
         >
@@ -63,7 +63,7 @@ onUnmounted(() => {
         </span>
       </div>
 
-      <p class="text-[11px] leading-relaxed text-gray-500 dark:text-gray-400">
+      <p class="text-[11px] leading-relaxed text-surface-500 dark:text-surface-400">
         <template v-if="connected && isElectron">
           {{ status?.fileCount }} {{ t('indexedFiles') }} · {{ formattedSize }}<br>
           FTS5 {{ status?.fts5Available ? t('fts5Ready') : t('fts5Unavailable') }}

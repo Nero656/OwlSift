@@ -1,7 +1,11 @@
 <script setup lang="ts">
+import AppLogo from './AppLogo.vue'
 const { files, searchQuery, addFolder, addOneFile, openCreateFileDialog, searchIndexedFiles } = useFiles()
 const { t, language } = useLanguage()
 const { settings, setTheme } = useSettings()
+const { connectionStatus } = useAi()
+const isGlobalConnected = computed(() => settings.value.modelProvider === 'global' && connectionStatus.value === 'ok')
+const isLocalConnected = computed(() => settings.value.modelProvider === 'local' && settings.value.localModel.enabled && connectionStatus.value === 'ok')
 const isIndexing = ref(false)
 const searchShortcut = ref('Ctrl+K')
 const searchInput = ref<HTMLInputElement | null>(null)
@@ -87,37 +91,33 @@ const handleAddFile = async () => {
 <template>
   <header
       class="z-20 flex h-16 shrink-0 items-center justify-between
-           border-b border-gray-200 bg-white/80 px-4 backdrop-blur-md
-           dark:border-gray-800 dark:bg-gray-900/80"
+           border-b border-surface-200 bg-white/80 px-4 backdrop-blur-md
+           dark:border-surface-800 dark:bg-surface-900/80"
   >
     <!-- Logo -->
 
-    <div class="flex w-64 items-center gap-3">
-      <div
-          class="flex h-9 w-9 items-center justify-center rounded-xl
-               bg-gradient-to-tr from-emerald-600 to-emerald-400
-               text-lg font-bold text-white shadow-lg"
-      >
-        <Icon name="lucide:brain" size="20" />
-      </div>
+    <div class="flex shrink-0 items-center gap-3 pr-4 lg:w-64">
+      <AppLogo />
 
       <div>
         <div class="flex items-center gap-2">
           <span class="text-lg font-bold tracking-tight">
-            LocalMind
+            OwlSift
           </span>
 
           <span
-              class="rounded border border-emerald-500/20
-                   bg-emerald-500/10 px-1.5 py-0.5
-                   text-[10px] font-medium text-emerald-600
-                   dark:text-emerald-400"
+              role="status"
+              aria-live="polite"
+              class="inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-medium transition-colors"
+              :class="isGlobalConnected ? 'border-green-500/30 bg-green-500/10 text-green-700 dark:text-green-400' : 'border-primary-500/20 bg-primary-500/10 text-primary-600 dark:text-primary-400'"
           >
-            OFFLINE
+            <span class="size-1.5 rounded-full bg-current" aria-hidden="true" />
+            {{ isGlobalConnected ? 'ONLINE' : 'OFFLINE' }}
+            <span v-if="isLocalConnected" class="border-l border-current/30 pl-1">LOCAL</span>
           </span>
         </div>
 
-        <p class="-mt-1 text-[11px] text-gray-500 dark:text-gray-400">
+        <p class="-mt-1 text-[11px] text-surface-500 dark:text-surface-400">
           Local-first AI Search
         </p>
       </div>
@@ -131,7 +131,7 @@ const handleAddFile = async () => {
             name="lucide:search"
             size="16"
             class="absolute left-3.5 top-1/2
-                 -translate-y-1/2 text-gray-400"
+                 -translate-y-1/2 text-surface-400"
         />
 
         <input
@@ -140,20 +140,20 @@ const handleAddFile = async () => {
             type="text"
             :placeholder="t('searchPlaceholder')"
             class="w-full rounded-xl border border-transparent
-                 bg-gray-100 py-2 pl-10 pr-20 text-sm
+                 bg-surface-100 py-2 pl-10 pr-20 text-sm
                  outline-none transition-all
-                 placeholder:text-gray-400
-                 focus:border-emerald-500
-                 focus:ring-2 focus:ring-emerald-500/20
-                 dark:bg-gray-800/80"
+                 placeholder:text-surface-400
+                 focus:border-primary-500
+                 focus:ring-2 focus:ring-primary-500/20
+                 dark:bg-surface-800/80"
         />
 
         <span
             class="absolute right-3 top-1/2
                  -translate-y-1/2 rounded-md border
-                 border-gray-200 bg-white px-2 py-0.5
-                 text-[11px] font-medium text-gray-400
-                 dark:border-gray-600 dark:bg-gray-700"
+                 border-surface-200 bg-white px-2 py-0.5
+                 text-[11px] font-medium text-surface-400
+                 dark:border-surface-600 dark:bg-surface-700"
         >
           {{ searchShortcut }}
         </span>
@@ -166,19 +166,19 @@ const handleAddFile = async () => {
       <span v-if="indexNotice" class="max-w-56 text-xs text-amber-600 dark:text-amber-400" role="status">{{ indexNotice }}</span>
       <div
           class="hidden items-center gap-2 rounded-lg
-               bg-gray-100 px-3 py-1.5 text-xs
-               text-gray-600 dark:bg-gray-800
-               dark:text-gray-300 md:flex"
+               bg-surface-100 px-3 py-1.5 text-xs
+               text-surface-600 dark:bg-surface-800
+               dark:text-surface-300 md:flex"
       >
-        <span class="h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
+        <span class="h-2 w-2 animate-pulse rounded-full bg-primary-500" />
         {{ t('indexed') }} <strong>{{ files.length }}</strong> {{ t('files') }}
       </div>
 
       <button
           class="flex items-center gap-2 rounded-xl
-               bg-emerald-600 px-3.5 py-2 text-xs
+               bg-primary-600 px-3.5 py-2 text-xs
                font-semibold text-white shadow-md
-               transition hover:bg-emerald-500
+               transition hover:bg-primary-500
                active:scale-95"
           :disabled="isIndexing"
           @click="handleAddFolder"
@@ -189,7 +189,7 @@ const handleAddFile = async () => {
 
       <button
           type="button"
-          class="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+          class="flex items-center gap-2 rounded-xl border border-surface-200 px-3 py-2 text-xs font-semibold text-surface-700 transition hover:bg-surface-100 dark:border-surface-700 dark:text-surface-200 dark:hover:bg-surface-800"
           :disabled="isAddingFile"
           @click="handleAddFile"
       >
@@ -199,7 +199,7 @@ const handleAddFile = async () => {
 
       <button
           type="button"
-          class="flex items-center gap-2 rounded-xl border border-gray-200 px-3 py-2 text-xs font-semibold text-gray-700 transition hover:bg-gray-100 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+          class="flex items-center gap-2 rounded-xl border border-surface-200 px-3 py-2 text-xs font-semibold text-surface-700 transition hover:bg-surface-100 dark:border-surface-700 dark:text-surface-200 dark:hover:bg-surface-800"
           @click="openCreateFileDialog()"
       >
         <Icon name="lucide:file-pen" size="16" />
@@ -207,10 +207,10 @@ const handleAddFile = async () => {
       </button>
 
       <button
-          class="rounded-xl p-2 text-gray-500 transition
-               hover:bg-gray-100 hover:text-gray-700
-               dark:text-gray-400 dark:hover:bg-gray-800
-               dark:hover:text-gray-200"
+          class="rounded-xl p-2 text-surface-500 transition
+               hover:bg-surface-100 hover:text-surface-700
+               dark:text-surface-400 dark:hover:bg-surface-800
+               dark:hover:text-surface-200"
           @click="toggleTheme"
       >
         <Icon

@@ -4,26 +4,34 @@ import Sidebar from './components/Sidebar.vue'
 import AiPanel from './components/AiPanel.vue'
 import CreateFileDialog from './components/CreateFileDialog.vue'
 
-const { loadIndex } = useFiles()
+const { loadIndex, selectedFolder, searchQuery, searchIndexedFiles } = useFiles()
+const { settings } = useSettings()
 const { t } = useLanguage()
-const showFilePreview = useState('show-file-preview', () => true)
+const showFilePreview = useState('show-file-preview', () => false)
+const route = useRoute()
+const settingsTab = useState<string | number>('settings-active-tab', () => 'general')
+watch([() => route.fullPath, selectedFolder, () => route.path === '/settings' ? settingsTab.value : null], () => { showFilePreview.value = false }, { flush: 'sync' })
+watch(() => settings.value.showSystemFiles, async () => {
+  await loadIndex()
+  await searchIndexedFiles(searchQuery.value)
+})
 onMounted(() => { void loadIndex() })
 </script>
 
 <template>
-  <div class="h-screen overflow-hidden bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+  <div class="h-screen overflow-hidden bg-surface-50 text-surface-900 dark:bg-surface-950 dark:text-surface-100">
     <div class="flex h-full flex-col">
       <AppHeader />
       <div class="flex min-h-0 flex-1">
         <Sidebar />
-        <main class="flex min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-gray-900">
+        <main class="flex min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-surface-900">
           <div class="flex min-h-0 flex-1 flex-col">
             <NuxtPage />
           </div>
-          <div v-if="!showFilePreview" class="flex shrink-0 justify-end border-t border-gray-200 p-2 dark:border-gray-800">
+          <div v-if="!showFilePreview" class="flex shrink-0 justify-end border-t border-surface-200 p-2 dark:border-surface-800">
             <button
               type="button"
-              class="rounded-lg p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-700 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+              class="rounded-lg p-2 text-surface-500 transition hover:bg-surface-100 hover:text-surface-700 dark:text-surface-400 dark:hover:bg-surface-800 dark:hover:text-surface-200"
               :title="t('showPreview')"
               :aria-label="t('showPreview')"
               @click="showFilePreview = true"

@@ -1,3 +1,7 @@
+import type { ComfySettings } from '~/types/media'
+import { defaultComfySettings, normalizeComfySettings } from '~/utils/comfyWorkflow'
+import { defaultCustomization, normalizeCustomization, themeFonts, type ThemeCustomization } from '~/utils/theme'
+
 export interface LocalModelConfig {
   enabled: boolean
   endpoint: string
@@ -13,23 +17,29 @@ export interface GlobalModelConfig {
 }
 
 export interface InterfaceSettings {
+  comfy: ComfySettings
   modelProvider: 'local' | 'global'
   theme: 'dark' | 'light'
+  customization: ThemeCustomization
   compactSidebar: boolean
   fileView: 'list' | 'grid'
   pageSize: number
   showThumbnails: boolean
+  showSystemFiles: boolean
   localModel: LocalModelConfig
   globalModel: GlobalModelConfig
 }
 
 const storageKey = 'localmind-interface-settings'
 export const defaults = (): InterfaceSettings => ({
+  comfy: defaultComfySettings(),
   theme: 'dark',
+  customization: defaultCustomization(),
   compactSidebar: false,
   fileView: 'grid',
   pageSize: 50,
   showThumbnails: true,
+  showSystemFiles: false,
   modelProvider: 'local',
   globalModel: {
     endpoint: 'https://api.openai.com/v1',
@@ -46,12 +56,23 @@ export const defaults = (): InterfaceSettings => ({
 })
 
 export const useSettings = () => {
+  const appConfig = useAppConfig()
+  const colorMode = useState<{ preference: string } | undefined>('color-mode')
   const settings = useState<InterfaceSettings>('interface-settings', defaults)
   const hasLoaded = useState('interface-settings-loaded', () => false)
 
   const applyTheme = () => {
     if (!import.meta.client) return
-    document.documentElement.classList.toggle('dark', settings.value.theme === 'dark')
+    const root = document.documentElement
+    const customization = normalizeCustomization(settings.value.customization)
+    root.classList.toggle('dark', settings.value.theme === 'dark')
+    root.classList.toggle('light', settings.value.theme === 'light')
+    root.style.colorScheme = settings.value.theme
+    if (colorMode.value) colorMode.value.preference = settings.value.theme
+    root.style.setProperty('--ui-radius', customization.radius + 'rem')
+    root.style.setProperty('--app-font', themeFonts[customization.font])
+    appConfig.ui.colors.primary = customization.primary
+    appConfig.ui.colors.neutral = customization.neutral
   }
 
   const save = () => {
@@ -69,10 +90,13 @@ export const useSettings = () => {
       settings.value = {
         ...initial,
         ...stored,
+        comfy: normalizeComfySettings(stored.comfy),
+        customization: normalizeCustomization(stored.customization),
         theme: stored.theme === 'light' ? 'light' : 'dark',
         fileView: stored.fileView === 'list' ? 'list' : 'grid',
         pageSize,
         showThumbnails: stored.showThumbnails !== false,
+        showSystemFiles: stored.showSystemFiles === true,
         compactSidebar: Boolean(stored.compactSidebar),
         modelProvider: stored.modelProvider === 'global' ? 'global' : 'local',
         localModel: {
@@ -92,7 +116,16 @@ export const useSettings = () => {
   }
 
   const reset = () => {
-    settings.value = defaults()
+    const initial = defaults()
+    settings.value = {
+      ...settings.value,
+      theme: initial.theme,
+      customization: initial.customization,
+      compactSidebar: initial.compactSidebar,
+      fileView: initial.fileView,
+      pageSize: initial.pageSize,
+      showThumbnails: initial.showThumbnails,
+    }
     hasLoaded.value = true
     save()
   }

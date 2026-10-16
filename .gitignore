@@ -29,3 +29,5 @@ pnpm-lock.yaml
 pnpm-workspace.yaml
 # Generated release seed
 build-resources/
+
+release
