@@ -11,7 +11,7 @@ async function requestComfy(input) {
     const target = new URL(base.toString().replace(/\/$/, '') + '/' + input.path.replace(/^\//, ''));
     const apiPath = '/' + input.path.replace(/^\//, '').split('?')[0];
     const method = input.method ?? 'GET';
-    const allowedGet = ['/system_stats', '/object_info', '/models/checkpoints', '/queue', '/view'].includes(apiPath) || /^\/history\/[a-z0-9-]+$/i.test(apiPath);
+    const allowedGet = ['/', '/system_stats', '/object_info', '/models/checkpoints', '/models/diffusion_models', '/models/text_encoders', '/models/vae', '/queue', '/view'].includes(apiPath) || /^\/history\/[a-z0-9-]+$/i.test(apiPath);
     const allowedPost = ['/prompt', '/queue'].includes(apiPath);
     if (target.origin !== base.origin || (method === 'GET' ? !allowedGet : method === 'POST' ? !allowedPost : true))
         throw new Error('Unsupported Comfy API operation');
@@ -24,8 +24,8 @@ async function requestComfy(input) {
     const body = input.body === undefined ? undefined : JSON.stringify(input.body);
     if (body && body.length > 2500000)
         throw new Error('Comfy request exceeds 2.5 MB');
-    const response = await fetch(target, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(input.token ? { Authorization: 'Bearer ' + input.token } : {}) }, body, signal: AbortSignal.timeout(30000), redirect: 'error' });
-    if (!response.ok) {
+    const response = await fetch(target, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(input.token ? { Authorization: 'Bearer ' + input.token } : {}) }, body, signal: AbortSignal.timeout(30000), redirect: 'error', cache: 'no-store' });
+    if (!response.ok && apiPath !== '/') {
         let message = (await response.text()).slice(0, 1500);
         const cloudKey = input.body?.extra_data?.api_key_comfy_org;
         for (const secret of [input.token, cloudKey])
@@ -53,6 +53,8 @@ async function requestComfy(input) {
             reader.releaseLock();
         }
     const buffer = Buffer.concat(chunks);
+    if (apiPath === '/')
+        return { availability: { status: response.status, workspaceAvailable: response.ok && /<(?:!doctype\s+html|html)(?:\s|>)/i.test(buffer.toString('utf8')) } };
     if (input.binary)
         return { base64: buffer.toString('base64'), mime: response.headers.get('content-type')?.split(';')[0] ?? 'application/octet-stream' };
     return { data: buffer.length ? JSON.parse(buffer.toString('utf8')) : {} };

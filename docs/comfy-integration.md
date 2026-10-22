@@ -46,3 +46,13 @@ The integration separates server transport, workflow preparation/risk assessment
 - [Server routes](https://docs.comfy.org/development/comfyui-server/comms_routes)
 - [WebSocket messages](https://docs.comfy.org/development/comfyui-server/comms_messages)
 - [Partner/cloud nodes](https://docs.comfy.org/tutorials/partner-nodes/overview)
+
+## Connection-status widget
+
+Opening Settings → Comfy Desktop or expanding image generation triggers GET / at the configured server address (default http://localhost:8188/). Retry connection repeats the check. Address/token/transport changes recheck after a short delay. Checks bypass HTTP caches.
+
+- **Connected and ready:** the root serves an HTML editor page and the Comfy system/node APIs are available.
+- **Connected, but workspace not connected:** the root responds, but the editor page or Comfy workflow APIs are unavailable (including HTTP authentication or startup errors).
+- **Disconnected:** the root cannot be reached through the selected transport. Browser CORS and mixed-content restrictions may also prevent access.
+
+Comfy does not expose the currently open Desktop editor graph through GET /. This widget checks editor/API availability, not whether a particular graph tab is open, model weights are loaded, or generation parameters will pass validation. Local-only and workflow configuration checks remain separate.

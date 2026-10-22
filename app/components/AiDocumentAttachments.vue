@@ -1,8 +1,13 @@
 <script setup lang="ts">
 const ids = defineModel<number[]>({ default: () => [] })
+const outputFolder = defineModel<string | null>('outputFolder', { default: null })
+const allowEdits = defineModel<boolean>('allowEdits', { default: false })
+const props = withDefaults(defineProps<{ hideSelection?: boolean }>(), { hideSelection: false })
+const emit = defineEmits<{ selectionApplied: [ids: number[]]; selectionClosed: [] }>()
 const { files, folders, selectedFolder, importDroppedFiles } = useFiles()
 const { t } = useLanguage()
 const selected = computed(() => files.value.filter(file => ids.value.includes(file.id)))
+const draftFiles = computed(() => files.value.filter(file => draft.value.includes(file.id)))
 const importing = ref(false)
 const notice = ref('')
 const picker = ref<HTMLInputElement | null>(null)
@@ -40,9 +45,12 @@ const open = () => {
 const selectPage = () => { draft.value = [...new Set([...draft.value, ...pageFiles.value.map(file => file.id)])] }
 const apply = () => {
   const existing = new Set(files.value.map(file => file.id))
-  ids.value = draft.value.filter(id => existing.has(id))
+  const selection = draft.value.filter(id => existing.has(id))
+  ids.value = selection
+  emit('selectionApplied', selection)
   dialog.value?.close()
 }
+const openComputerPicker = () => picker.value?.click()
 const importFiles = async (event: Event) => {
   const input = event.target as HTMLInputElement
   const sources = Array.from(input.files ?? [])
@@ -56,18 +64,13 @@ const importFiles = async (event: Event) => {
   } catch { notice.value = t('fileAddError') }
   finally { importing.value = false; input.value = '' }
 }
+defineExpose({ open, openComputerPicker })
 </script>
 <template>
-  <div class="w-full min-w-0 space-y-2">
-    <div class="flex flex-wrap items-start gap-2 text-xs text-surface-500">
-      <button type="button" class="flex items-center gap-2 rounded-lg border border-surface-200 px-3 py-2 dark:border-surface-700" @click="open">
-        <Icon name="lucide:folder-open" size="15" />{{ t('chooseDocuments') }}
-      </button>
-      <button type="button" :disabled="importing" class="rounded-lg border border-surface-200 px-3 py-2 disabled:opacity-50 dark:border-surface-700" @click="picker?.click()">{{ importing ? t('dropImporting') : t('importFromComputer') }}</button>
-      <input ref="picker" type="file" multiple class="hidden" @change="importFiles">
-    </div>
-    <p v-if="selected.length" class="text-xs text-surface-500">{{ t('selectedDocuments') }} {{ selected.length }}</p>
-    <div class="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
+  <div :class="props.hideSelection ? 'contents' : 'w-full min-w-0 space-y-2'">
+    <input ref="picker" type="file" multiple class="hidden" @change="importFiles">
+    <p v-if="!props.hideSelection && selected.length" class="text-xs text-surface-500">{{ t('selectedDocuments') }} {{ selected.length }}</p>
+    <div v-if="!props.hideSelection" class="flex max-h-24 flex-wrap gap-1 overflow-y-auto">
       <button v-for="file in selected" :key="file.id" type="button" class="flex max-w-full items-center gap-1 rounded-lg bg-primary-500/10 px-2 py-1 text-xs text-primary-600" :title="t('cancel') + ': ' + file.name" @click="ids = ids.filter(id => id !== file.id)">
         <span class="truncate">{{ file.name }}</span><Icon name="lucide:x" size="12" />
       </button>
@@ -76,7 +79,7 @@ const importFiles = async (event: Event) => {
     <Teleport to="body">
       <dialog ref="dialog" aria-labelledby="document-picker-title"
         class="m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto rounded-2xl border border-surface-200 bg-white p-4 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100 md:p-6"
-        @click="($event.target === dialog) && dialog?.close()" @dragover.prevent @drop.prevent>
+        @click="($event.target === dialog) && dialog?.close()" @close="emit('selectionClosed')" @dragover.prevent @drop.prevent>
         <header class="mb-4 flex items-start justify-between gap-3">
           <h2 id="document-picker-title" class="text-lg font-semibold">{{ t('chooseDocuments') }}</h2>
           <button type="button" class="rounded-lg p-2 hover:bg-surface-100 dark:hover:bg-surface-800" :aria-label="t('closeDialog')" @click="dialog?.close()"><Icon name="lucide:x" size="18" /></button>
@@ -103,6 +106,10 @@ const importFiles = async (event: Event) => {
           <FileCard v-for="file in pageFiles" :key="file.id" :file="file" :layout="view" selectable hide-summary :selected="draft.includes(file.id)" @toggle="toggle" />
         </div>
         <p v-else class="py-12 text-center text-sm text-surface-500">{{ t('noMatchingFiles') }}</p>
+        <section class="mt-4 rounded-xl border border-surface-200 bg-surface-50 p-3 dark:border-surface-700 dark:bg-surface-800/50">
+          <h3 class="mb-3 text-sm font-medium">{{ t('assistantOptions') }}</h3>
+          <AiOutputSettings v-model="outputFolder" v-model:allow-edits="allowEdits" :selected-files="draftFiles" />
+        </section>
         <footer class="sticky bottom-0 mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-surface-200 bg-white pt-3 dark:border-surface-700 dark:bg-surface-900">
           <div class="flex items-center gap-2 text-xs">
             <button type="button" class="rounded-lg border border-surface-200 px-3 py-2 disabled:opacity-40 dark:border-surface-700" :disabled="page <= 1" @click="page--">{{ t('previousPage') }}</button>

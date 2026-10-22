@@ -9,9 +9,13 @@ export interface LocalModelConfig {
   systemPrompt: string
 }
 
+export type GlobalApiProvider = 'openai' | 'gemini' | 'deepseek'
+
 export interface GlobalModelConfig {
+  provider: GlobalApiProvider
   endpoint: string
   apiKey: string
+  providerKeys: Partial<Record<GlobalApiProvider, string>>
   model: string
   systemPrompt: string
 }
@@ -19,7 +23,7 @@ export interface GlobalModelConfig {
 export interface InterfaceSettings {
   comfy: ComfySettings
   modelProvider: 'local' | 'global'
-  theme: 'dark' | 'light'
+  theme: 'dark' | 'light' | 'light-cloud' | 'light-silver' | 'light-ash' | 'light-stone'
   customization: ThemeCustomization
   compactSidebar: boolean
   fileView: 'list' | 'grid'
@@ -42,8 +46,10 @@ export const defaults = (): InterfaceSettings => ({
   showSystemFiles: false,
   modelProvider: 'local',
   globalModel: {
+    provider: 'openai',
     endpoint: 'https://api.openai.com/v1',
     apiKey: '',
+    providerKeys: { openai: '', gemini: '', deepseek: '' },
     model: '',
     systemPrompt: 'You are a helpful assistant. Answer using the supplied file context when it is available.',
   },
@@ -66,9 +72,11 @@ export const useSettings = () => {
     const root = document.documentElement
     const customization = normalizeCustomization(settings.value.customization)
     root.classList.toggle('dark', settings.value.theme === 'dark')
-    root.classList.toggle('light', settings.value.theme === 'light')
-    root.style.colorScheme = settings.value.theme
-    if (colorMode.value) colorMode.value.preference = settings.value.theme
+    const isDark = settings.value.theme === 'dark'
+    root.classList.toggle('light', !isDark)
+    root.dataset.lightTone = settings.value.theme === 'light' ? 'white' : settings.value.theme.replace('light-', '')
+    root.style.colorScheme = isDark ? 'dark' : 'light'
+    if (colorMode.value) colorMode.value.preference = isDark ? 'dark' : 'light'
     root.style.setProperty('--ui-radius', customization.radius + 'rem')
     root.style.setProperty('--app-font', themeFonts[customization.font])
     appConfig.ui.colors.primary = customization.primary
@@ -92,7 +100,7 @@ export const useSettings = () => {
         ...stored,
         comfy: normalizeComfySettings(stored.comfy),
         customization: normalizeCustomization(stored.customization),
-        theme: stored.theme === 'light' ? 'light' : 'dark',
+        theme: ['light', 'light-cloud', 'light-silver', 'light-ash', 'light-stone'].includes(String(stored.theme)) ? stored.theme as InterfaceSettings['theme'] : 'dark',
         fileView: stored.fileView === 'list' ? 'list' : 'grid',
         pageSize,
         showThumbnails: stored.showThumbnails !== false,
@@ -106,7 +114,12 @@ export const useSettings = () => {
             ? initial.localModel.endpoint
             : stored.localModel?.endpoint ?? initial.localModel.endpoint,
         },
-        globalModel: { ...initial.globalModel, ...(stored.globalModel ?? {}) },
+        globalModel: {
+          ...initial.globalModel,
+          ...(stored.globalModel ?? {}),
+          provider: ['openai', 'gemini', 'deepseek'].includes(String(stored.globalModel?.provider)) ? stored.globalModel!.provider! : 'openai',
+          providerKeys: { ...initial.globalModel.providerKeys, ...(stored.globalModel?.providerKeys ?? {}) },
+        },
       }
     } catch {
       settings.value = defaults()

@@ -3,6 +3,7 @@ import {useFiles} from "../composables/useFiles";
 import NavigationButton from './nav_items/Navgation_button.vue'
 import WorkersButton from './nav_items/Workers_button.vue'
 import Sqlite_status from "./nav_items/Sqlite_status.vue";
+import { useAiChats } from '../composables/useAiChats';
 
 const {
   folders,
@@ -10,8 +11,21 @@ const {
 } = useFiles()
 
 const route = useRoute()
-const { t } = useLanguage()
 const { settings } = useSettings()
+const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
+const { activeChatId, chats, newChat, selectChat } = useAiChats(attachedIds)
+const chatSidebarVisible = useState('ai-chat-sidebar-visible', () => true)
+const previousCompact = useState<boolean | null>('ai-sidebar-previous-compact', () => null)
+watch(() => route.path === '/ai_assistant', (inAssistant, wasInAssistant) => {
+  if (inAssistant && !wasInAssistant) {
+    previousCompact.value = settings.value.compactSidebar
+    settings.value.compactSidebar = true
+  } else if (!inAssistant && wasInAssistant && previousCompact.value !== null) {
+    if (settings.value.compactSidebar) settings.value.compactSidebar = previousCompact.value
+    previousCompact.value = null
+  }
+}, { immediate: true })
+const { t } = useLanguage()
 const isCompact = computed({
   get: () => settings.value.compactSidebar,
   set: value => { settings.value.compactSidebar = value },
@@ -62,6 +76,7 @@ const navItems = computed(() => [
 </script>
 
 <template>
+  <div class="flex h-full shrink-0">
   <aside
       class="flex shrink-0 flex-col justify-between border-r border-surface-200 bg-white/50 transition-[width] duration-200 dark:border-surface-800 dark:bg-surface-900/50"
       :class="isCompact ? 'w-16' : 'w-64'"
@@ -133,4 +148,18 @@ const navItems = computed(() => [
       </div>
     </div>
   </aside>
+  <Transition name="chat-sidebar">
+    <aside v-if="route.path === '/ai_assistant' && chatSidebarVisible" class="chat-sidebar-panel flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-surface-200 bg-surface-50/80 dark:border-surface-800 dark:bg-surface-950/40">
+      <AiChatSwitcher :chats="chats" :active-key="activeChatId" @select="selectChat" @new="newChat" />
+    </aside>
+  </Transition>
+  </div>
 </template>
+
+<style scoped>
+.chat-sidebar-panel { width: clamp(7rem, 24vw, 16rem); flex-basis: clamp(7rem, 24vw, 16rem); transition: width 220ms ease, flex-basis 220ms ease, opacity 180ms ease, transform 220ms ease; }
+.chat-sidebar-enter-from, .chat-sidebar-leave-to { width: 0; flex-basis: 0; opacity: 0; transform: translateX(-8px); }
+.chat-sidebar-enter-to, .chat-sidebar-leave-from { opacity: 1; transform: translateX(0); }
+@media (prefers-reduced-motion: reduce) { .chat-sidebar-panel { transition: none; } }
+</style>
+

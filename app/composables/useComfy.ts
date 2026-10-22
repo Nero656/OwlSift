@@ -1,7 +1,7 @@
 import type { ComfySettings, ComfyNodeCatalog, ComfyJob } from '~/types/media'
 import type { ComfyRequest, ComfyResponse } from '../../src/services/comfyTransport'
 import type { ChatMessage } from '~/types/file'
-import { assessWorkflow, builtInImageWorkflow, parseComfyWorkflow, prepareImageWorkflow, extractMediaOutputs } from '~/utils/comfyWorkflow'
+import { assessWorkflow, builtInImageWorkflow, builtInZImageTurboWorkflow, parseComfyWorkflow, prepareImageWorkflow, extractMediaOutputs } from '~/utils/comfyWorkflow'
 let stopWaiting = false
 let activeSocket: WebSocket | undefined
 let activeConfig: ComfySettings | undefined
@@ -15,7 +15,11 @@ async function transport(config: ComfySettings, path: string, options: Partial<C
   const request: ComfyRequest = { ...options, endpoint: config.endpoint.trim().replace(/\/+$/, ''), token: config.serverToken, path }
   if (import.meta.client && window.electron) return window.electron.invoke('comfy:request', request)
   if (config.transport === 'proxy') return $fetch<ComfyResponse>('/api/comfy', { method: 'POST', body: request, timeout: 35000 })
-  const response = await fetch(request.endpoint + path, { method: request.method ?? 'GET', headers: { ...(request.body ? { 'Content-Type': 'application/json' } : {}), ...(request.token ? { Authorization: 'Bearer ' + request.token } : {}) }, body: request.body === undefined ? undefined : JSON.stringify(request.body), signal: AbortSignal.timeout(30000) })
+  const response = await fetch(request.endpoint + path, { method: request.method ?? 'GET', headers: { ...(request.body ? { 'Content-Type': 'application/json' } : {}), ...(request.token ? { Authorization: 'Bearer ' + request.token } : {}) }, body: request.body === undefined ? undefined : JSON.stringify(request.body), signal: AbortSignal.timeout(30000), cache: 'no-store' })
+  if (path === '/') {
+    const html = await response.text()
+    return { availability: { status: response.status, workspaceAvailable: response.ok && /<(?:!doctype\s+html|html)(?:\s|>)/i.test(html) } }
+  }
   if (!response.ok) throw new Error('Comfy HTTP ' + response.status + ': ' + (await response.text()).slice(0, 1000))
   if (request.binary) {
     const buffer = new Uint8Array(await response.arrayBuffer())
@@ -32,26 +36,58 @@ export function useComfy() {
   const { folders, saveGeneratedMedia } = useFiles()
   const catalog = useState<ComfyNodeCatalog>('comfy-node-catalog', () => ({}))
   const checkpoints = useState<string[]>('comfy-checkpoints', () => [])
+  const zImageDiffusionModels = useState<string[]>('comfy-zimage-diffusion-models', () => [])
+  const zImageTextEncoders = useState<string[]>('comfy-zimage-text-encoders', () => [])
+  const zImageVaes = useState<string[]>('comfy-zimage-vaes', () => [])
   const verifiedSignature = useState('comfy-verified-signature', () => '')
   const testing = useState('comfy-testing', () => false)
+  const checkRevision = useState('comfy-check-revision', () => 0)
+  const checkingSignature = useState('comfy-checking-signature', () => '')
+  const checkedSignature = useState('comfy-checked-signature', () => '')
+  const reachable = useState('comfy-reachable', () => false)
+  const editorAvailable = useState('comfy-editor-available', () => false)
+  const checkedAt = useState<number | null>('comfy-checked-at', () => null)
   const busy = useState('comfy-busy', () => false)
   const error = useState('comfy-error', () => '')
   const job = useState<ComfyJob | null>('comfy-job', () => null)
   const conversations = useState<Record<string, ChatMessage[]>>('ai-conversations', () => ({}))
   const connected = computed(() => verifiedSignature.value === signature(settings.value.comfy))
+  const connectionStatus = computed<'unchecked' | 'ready' | 'workspace-unavailable' | 'disconnected'>(() => {
+    if (checkedSignature.value !== signature(settings.value.comfy)) return 'unchecked'
+    if (!reachable.value) return 'disconnected'
+    return editorAvailable.value && connected.value ? 'ready' : 'workspace-unavailable'
+  })
   const workflowError = computed(() => {
+    if (settings.value.comfy.workflowMode === 'z-image-turbo') {
+      const model = settings.value.comfy
+      if (!model.zImageDiffusionModel || !model.zImageTextEncoder || !model.zImageVae) return t('comfyZImageModelsRequired')
+      if ((zImageDiffusionModels.value.length && !zImageDiffusionModels.value.includes(model.zImageDiffusionModel)) || (zImageTextEncoders.value.length && !zImageTextEncoders.value.includes(model.zImageTextEncoder)) || (zImageVaes.value.length && !zImageVaes.value.includes(model.zImageVae))) return t('comfyZImageModelsRequired')
+      return ''
+    }
     if (settings.value.comfy.workflowMode !== 'custom') return ''
     try { parseComfyWorkflow(settings.value.comfy.workflowJson); return '' } catch (error) { return errorText(error) }
   })
   const workflow = computed(() => {
-    try { return settings.value.comfy.workflowMode === 'custom' ? parseComfyWorkflow(settings.value.comfy.workflowJson) : builtInImageWorkflow(settings.value.comfy.checkpoint) } catch { return {} }
+    try {
+      const config = settings.value.comfy
+      return config.workflowMode === 'custom' ? parseComfyWorkflow(config.workflowJson) : config.workflowMode === 'z-image-turbo' ? builtInZImageTurboWorkflow(config) : builtInImageWorkflow(config.checkpoint)
+    } catch { return {} }
   })
   const assessment = computed(() => assessWorkflow(workflow.value, connected.value ? catalog.value : {}))
   const verify = async () => {
-    if (testing.value) return
-    testing.value = true; error.value = ''; verifiedSignature.value = ''
     const config = structuredClone(toRaw(settings.value.comfy))
+    const configSignature = signature(config)
+    if (testing.value && checkingSignature.value === configSignature) return
+    const revision = ++checkRevision.value
+    const current = () => revision === checkRevision.value && configSignature === signature(settings.value.comfy)
+    testing.value = true; checkingSignature.value = configSignature
+    error.value = ''; verifiedSignature.value = ''; checkedSignature.value = ''; reachable.value = false; editorAvailable.value = false
+    catalog.value = {}; checkpoints.value = []; zImageDiffusionModels.value = []; zImageTextEncoders.value = []; zImageVaes.value = []; checkedAt.value = null
     try {
+      // GET / checks the editor independently of the workflow API and accepts HTTP error responses as reachable.
+      const root = await transport(config, '/')
+      if (!current()) return
+      reachable.value = true; editorAvailable.value = root.availability?.workspaceAvailable === true
       const stats = await transport(config, '/system_stats')
       if (!stats.data || typeof stats.data !== 'object' || !('system' in stats.data)) throw new Error('The endpoint is not a ComfyUI server. Enter the server base URL without /v1 or /api.')
       const nodeResponse = await transport(config, '/object_info')
@@ -64,18 +100,36 @@ export function useComfy() {
         const choices = Array.isArray(definition) ? definition[0] : undefined
         if (Array.isArray(choices)) models = choices.filter((value): value is string => typeof value === 'string')
       }
-      if (signature(config) !== signature(settings.value.comfy)) return
-      catalog.value = nodes; checkpoints.value = models; verifiedSignature.value = signature(config)
-    } catch (issue) { error.value = errorText(issue).split(config.serverToken || '\0').join(config.serverToken ? '[redacted]' : '\0') }
-    finally { testing.value = false }
+      const listModels = async (folder: string) => {
+        try {
+          const response = await transport(config, '/models/' + folder)
+          return Array.isArray(response.data) ? response.data.filter((value): value is string => typeof value === 'string') : []
+        } catch { return [] }
+      }
+      const [diffusionModels, textEncoders, vaes] = await Promise.all([listModels('diffusion_models'), listModels('text_encoders'), listModels('vae')])
+      if (!current()) return
+      catalog.value = nodes; checkpoints.value = models; zImageDiffusionModels.value = diffusionModels; zImageTextEncoders.value = textEncoders; zImageVaes.value = vaes; verifiedSignature.value = signature(config)
+    } catch (issue) {
+      if (current()) error.value = errorText(issue).split(config.serverToken || '\0').join(config.serverToken ? '[redacted]' : '\0')
+    } finally {
+      if (revision === checkRevision.value) {
+        testing.value = false
+        if (current()) { checkedSignature.value = configSignature; checkedAt.value = Date.now() }
+      }
+    }
   }
-  const generate = async (params: { prompt: string; negative: string; seed: number; width: number; height: number; folderPath: string; chatKey: string; acknowledgeExternal: boolean }) => {
+  const generate = async (params: { prompt: string; negative: string; seed: number; width: number; height: number; folderPath: string; chatKey: string; acknowledgeExternal: boolean; originalPrompt?: string }) => {
     if (busy.value) return
     busy.value = true; error.value = ''; stopWaiting = false; job.value = null
     const config = structuredClone(toRaw(settings.value.comfy))
     activeConfig = config
     let message: ChatMessage | undefined
     try {
+      const target = conversations.value[params.chatKey] ?? (conversations.value[params.chatKey] = [])
+      const originalPrompt = typeof params.originalPrompt === 'string' ? params.originalPrompt.trim() : ''
+      target.push({ sender: 'user', text: originalPrompt || params.prompt, createdAt: Date.now() })
+      target.push({ sender: 'ai', provider: 'comfy', text: t('comfySubmitting'), createdAt: Date.now(), createdFiles: [] })
+      message = target[target.length - 1]!
       if (!config.enabled || !connected.value) throw new Error(t('comfyConnectFirst'))
       if (!params.prompt.trim() || params.prompt.length > 20000) throw new Error(t('comfyPromptRequired'))
       if (!folders.value.some(folder => folder.path === params.folderPath)) throw new Error(t('outputFolderUnavailable'))
@@ -84,10 +138,7 @@ export function useComfy() {
       if (audit.missingNodes.length) throw new Error(t('comfyMissingNodes') + ' ' + audit.missingNodes.join(', '))
       if (audit.execution !== 'local' && (config.localOnly || !params.acknowledgeExternal)) throw new Error(t('comfyExternalConsent'))
       if (!Number.isSafeInteger(params.seed) || params.seed < 0 || ![512, 768, 1024].includes(params.width) || ![512, 768, 1024].includes(params.height)) throw new Error('Invalid image size or seed')
-      const target = conversations.value[params.chatKey] ?? (conversations.value[params.chatKey] = [])
-      target.push({ sender: 'user', text: params.prompt, createdAt: Date.now() })
-      target.push({ sender: 'ai', provider: 'comfy', text: t('comfySubmitting'), createdAt: Date.now(), createdFiles: [] })
-      message = target[target.length - 1]!
+      message.mediaGeneration = { provider: 'comfy', jobId: '', kind: 'image', execution: audit.execution, prompt: params.prompt }
       const clientId = globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)
       // Progress via WebSocket is optional; history/queue polling also works through the proxy.
       if (!config.serverToken) try {
@@ -95,7 +146,7 @@ export function useComfy() {
         activeSocket = new WebSocket(ws)
         activeSocket.onmessage = event => {
           if (typeof event.data !== 'string') return
-          try { const frame = JSON.parse(event.data); if (frame.data?.prompt_id !== job.value?.id) return; if (frame.type === 'progress' && frame.data.max > 0 && job.value) job.value.progress = Math.round(100 * frame.data.value / frame.data.max) } catch { /* Binary previews and optional events do not affect completion. */ }
+          try { const frame = JSON.parse(event.data); if (frame.data?.prompt_id !== job.value?.id) return; if (frame.type === 'progress' && frame.data.max > 0 && job.value) { job.value.progress = Math.round(100 * frame.data.value / frame.data.max); if (message) message.text = t('comfyRunning') + ' · ' + t('comfyProgress') + ': ' + job.value.progress + '%' } } catch { /* Binary previews and optional events do not affect completion. */ }
         }
         activeSocket.onerror = () => { /* Queue/history polling remains available. */ }
       } catch { /* Polling is sufficient. */ }
@@ -104,7 +155,7 @@ export function useComfy() {
       if (!accepted?.prompt_id || (accepted.node_errors && Object.keys(accepted.node_errors).length)) throw new Error(JSON.stringify(accepted?.error ?? accepted?.node_errors ?? response.data))
       job.value = { id: accepted.prompt_id, endpoint: config.endpoint, chatKey: params.chatKey, folderPath: params.folderPath, prompt: params.prompt, phase: 'queued', status: t('comfyQueued'), progress: null, saved: [], execution: audit.execution }
       if (stopWaiting) try { await transport(config, '/queue', { method: 'POST', body: { delete: [accepted.prompt_id] } }) } catch { /* The running job can still finish in Comfy. */ }
-      message.mediaGeneration = { provider: 'comfy', jobId: accepted.prompt_id, kind: 'image', execution: audit.execution }
+      message.mediaGeneration = { provider: 'comfy', jobId: accepted.prompt_id, kind: 'image', execution: audit.execution, prompt: params.prompt }
       const started = Date.now()
       while (!stopWaiting) {
         if (Date.now() - started > 60 * 60 * 1000) throw new Error('Stopped waiting after one hour. Check the job in Comfy Desktop: ' + accepted.prompt_id)
@@ -130,12 +181,12 @@ export function useComfy() {
             job.value.saved.push({ id: saved.id, name: saved.name, path: saved.path, extension: saved.extension })
             message.createdFiles = [...job.value.saved]
           }
-          if (!stopWaiting) { job.value.phase = 'done'; job.value.status = t('comfyDone'); job.value.progress = 100; message.text = t('comfyDone') + ' ' + job.value.saved.length }
+          if (!stopWaiting) { job.value.phase = 'done'; job.value.status = t('comfyDone'); job.value.progress = 100; message.text = t('comfyPromptUsed') + ': ' + params.prompt + '\n\n' + t('comfyDone') + ' ' + job.value.saved.length }
           break
         }
         const queue = (await transport(config, '/queue')).data as { queue_running?: unknown[][]; queue_pending?: unknown[][] }
         const running = queue.queue_running?.some(item => item[1] === accepted.prompt_id)
-        job.value.phase = running ? 'running' : 'queued'; job.value.status = running ? t('comfyRunning') : t('comfyQueued'); message.text = job.value.status
+        job.value.phase = running ? 'running' : 'queued'; job.value.status = running ? t('comfyRunning') : t('comfyQueued'); message.text = job.value.status + (job.value.progress !== null ? ' · ' + t('comfyProgress') + ': ' + job.value.progress + '%' : '')
         await new Promise(resolve => setTimeout(resolve, 1500))
       }
       if (stopWaiting) { job.value.phase = 'stopped'; job.value.status = t('comfyStopped'); message.text = t('comfyStopped') }
@@ -144,7 +195,7 @@ export function useComfy() {
       for (const secret of [config.serverToken, config.cloudApiKey]) if (secret) text = text.split(secret).join('[redacted]')
       error.value = text
       if (job.value) { job.value.phase = 'error'; job.value.status = text }
-      if (message) message.text = t('comfyExecutionFailed') + ' ' + text
+      if (message) message.text = (message.mediaGeneration?.prompt ? t('comfyPromptUsed') + ': ' + message.mediaGeneration.prompt + '\n\n' : '') + t('comfyExecutionFailed') + ' ' + text
     } finally { activeSocket?.close(); activeSocket = undefined; activeConfig = undefined; busy.value = false }
   }
   const stop = async () => {
@@ -152,5 +203,6 @@ export function useComfy() {
     // Delete only our pending item. A running workflow is left alone; /interrupt on older servers is global.
     if (activeConfig && job.value?.id && job.value.phase === 'queued') try { await transport(activeConfig, '/queue', { method: 'POST', body: { delete: [job.value.id] } }) } catch { /* Stopping the UI must remain possible when the server disconnects. */ }
   }
-  return { connected, testing, busy, error, catalog, checkpoints, assessment, workflowError, workflow, job, verify, generate, stop }
+  return { connected, connectionStatus, checkedAt, testing, busy, error, catalog, checkpoints, zImageDiffusionModels, zImageTextEncoders, zImageVaes, assessment, workflowError, workflow, job, verify, generate, stop }
 }
+

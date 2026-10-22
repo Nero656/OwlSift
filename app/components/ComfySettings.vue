@@ -4,11 +4,12 @@ import { parseComfyWorkflow } from '~/utils/comfyWorkflow'
 const { settings } = useSettings()
 const config = computed(() => settings.value.comfy)
 const { t } = useLanguage()
-const { connected, testing, error, checkpoints, workflow, verify } = useComfy()
+const { connected, checkpoints, zImageDiffusionModels, zImageTextEncoders, zImageVaes, workflow, testing, verify } = useComfy()
 const importError = ref('')
 const upload = ref<HTMLInputElement | null>(null)
 const nodes = computed(() => Object.entries(workflow.value).map(([value, node]) => ({ value, label: value + ' · ' + node.class_type })))
 const optionalNodes = computed(() => [{ value: '', label: t('comfyUnused') }, ...nodes.value])
+const modelOptions = (items: string[], selected: string) => [...new Set([selected, ...items].filter(Boolean))].map(value => ({ value, label: value }))
 const detect = () => {
   try {
     const graph = parseComfyWorkflow(config.value.workflowJson)
@@ -41,18 +42,26 @@ const importWorkflow = async (event: Event) => {
     <label class="flex items-center justify-between gap-3 text-sm font-semibold"><span>{{ t('comfyEnable') }}</span><input v-model="config.enabled" type="checkbox" class="size-5 shrink-0 accent-primary-600"></label>
     <p class="mt-2 text-xs text-surface-500">{{ t('comfySeparateProviders') }}</p>
     <div class="mt-5 grid gap-4 sm:grid-cols-2">
-      <label class="text-sm">{{ t('comfyEndpoint') }}<input v-model.trim="config.endpoint" type="url" placeholder="http://127.0.0.1:8188" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"></label>
+      <label class="text-sm">{{ t('comfyEndpoint') }}<input v-model.trim="config.endpoint" type="url" placeholder="http://localhost:8188" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"></label>
       <label class="text-sm">{{ t('comfyServerToken') }}<input v-model.trim="config.serverToken" type="password" autocomplete="off" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"></label>
       <label class="text-sm">{{ t('comfyTransport') }}<AppDropdown v-model="config.transport" :options="[{ value: 'proxy', label: t('comfyProxy') }, { value: 'direct', label: t('comfyDirect') }]" class="mt-2" /></label>
     </div>
-    <div class="mt-4 flex flex-wrap items-center gap-3"><UButton :loading="testing" :disabled="testing || !config.enabled || !config.endpoint.trim()" @click="verify">{{ t('comfyVerify') }}</UButton><span class="text-xs" :class="connected ? 'text-green-600' : 'text-surface-500'">{{ connected ? t('comfyConnected') : t('comfyDisconnected') }}</span></div>
-    <p v-if="error" role="alert" class="mt-3 break-words text-xs text-rose-500">{{ error }}</p>
+    <div class="mt-4 flex flex-wrap gap-3">
+      <UButton icon="i-lucide-plug" :loading="testing" :disabled="testing || !config.enabled || !config.endpoint.trim()" @click="verify">{{ t('comfyConnectButton') }}</UButton>
+    </div>
+    <ComfyConnectionStatus class="mt-4" />
     <div class="mt-6 space-y-4 border-t border-surface-200 pt-5 dark:border-surface-800">
-      <label class="block text-sm">{{ t('comfyMode') }}<AppDropdown v-model="config.workflowMode" :options="[{ value: 'builtin', label: t('comfyBuiltin') }, { value: 'custom', label: t('comfyCustom') }]" class="mt-2" /></label>
+      <label class="block text-sm">{{ t('comfyMode') }}<AppDropdown v-model="config.workflowMode" :options="[{ value: 'builtin', label: t('comfyBuiltin') }, { value: 'z-image-turbo', label: t('comfyZImageTurbo') }, { value: 'custom', label: t('comfyCustom') }]" class="mt-2" /></label>
       <template v-if="config.workflowMode === 'builtin'">
         <label class="block text-sm">{{ t('comfyCheckpoint') }}<AppDropdown v-model="config.checkpoint" :options="checkpoints.map(value => ({ value, label: value }))" :placeholder="t('comfySelectCheckpoint')" :disabled="!connected || !checkpoints.length" class="mt-2" /></label>
         <p v-if="connected && !checkpoints.length" class="text-xs text-amber-600">{{ t('comfyNoCheckpoints') }}</p>
         <p class="text-xs leading-relaxed text-surface-500">{{ t('comfyCompatibility') }}</p>
+      </template>
+      <template v-else-if="config.workflowMode === 'z-image-turbo'">
+        <p class="text-xs leading-relaxed text-surface-500">{{ t('comfyZImageSetup') }}</p>
+        <label class="block text-sm">{{ t('comfyZImageDiffusion') }}<AppDropdown v-model="config.zImageDiffusionModel" :options="modelOptions(zImageDiffusionModels, config.zImageDiffusionModel)" :placeholder="t('comfyZImageChooseDiffusion')" :disabled="!connected || !zImageDiffusionModels.length" class="mt-2" /></label>
+        <label class="block text-sm">{{ t('comfyZImageTextEncoder') }}<AppDropdown v-model="config.zImageTextEncoder" :options="modelOptions(zImageTextEncoders, config.zImageTextEncoder)" :placeholder="t('comfyZImageChooseTextEncoder')" :disabled="!connected || !zImageTextEncoders.length" class="mt-2" /></label>
+        <label class="block text-sm">{{ t('comfyZImageVae') }}<AppDropdown v-model="config.zImageVae" :options="modelOptions(zImageVaes, config.zImageVae)" :placeholder="t('comfyZImageChooseVae')" :disabled="!connected || !zImageVaes.length" class="mt-2" /></label>
       </template>
       <template v-else>
         <div class="flex flex-wrap gap-2"><UButton variant="outline" color="neutral" @click="upload?.click()">{{ t('comfyImportWorkflow') }}</UButton><UButton variant="outline" color="neutral" @click="detect">{{ t('comfyDetectBindings') }}</UButton><input ref="upload" type="file" accept=".json,application/json" class="hidden" @change="importWorkflow"></div>

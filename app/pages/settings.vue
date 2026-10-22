@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { getLanguageName, supportedLanguages } from '~/composables/useLanguage'
+import type { GlobalApiProvider } from '~/composables/useSettings'
 const { language, setLanguage, t } = useLanguage()
 const { maxFilesPerFolder } = useFiles()
 const { settings, reset } = useSettings()
@@ -26,11 +28,30 @@ watch(settings, () => {
   savedTimer = setTimeout(() => { savedLabel.value = '' }, 1800)
 }, { deep: true })
 
-const languageOptions = computed(() => [
-  { value: 'ru' as const, label: t('russian') },
-  { value: 'en' as const, label: t('english') },
-])
-
+const languageOptions = computed(() => supportedLanguages.map(option => ({
+  ...option,
+  label: getLanguageName(option.value, language.value),
+})))
+const providerEndpoints: Record<GlobalApiProvider, string> = {
+  openai: 'https://api.openai.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  deepseek: 'https://api.deepseek.com',
+}
+const globalProviderSelection = computed({
+  get: () => settings.value.globalModel.provider,
+  set: (provider: GlobalApiProvider) => {
+    const config = settings.value.globalModel
+    if (config.apiKey) config.providerKeys[config.provider] = config.apiKey
+    const isKnownEndpoint = Object.values(providerEndpoints).includes(config.endpoint.replace(/\/+$/, ''))
+    config.provider = provider
+    config.apiKey = config.providerKeys[provider] ?? ''
+    config.model = ''
+    if (isKnownEndpoint || !config.endpoint.trim()) config.endpoint = providerEndpoints[provider]
+  },
+})
+watch(() => settings.value.globalModel.apiKey, key => {
+  settings.value.globalModel.providerKeys[settings.value.globalModel.provider] = key
+})
 const checkModel = async () => {
   isTesting.value = true
   try {
@@ -69,7 +90,14 @@ const checkModel = async () => {
           <section class="rounded-2xl border border-surface-200 bg-white p-4 sm:p-6 dark:border-surface-800 dark:bg-surface-900">
             <h2 class="text-sm font-semibold">{{ t('interfaceTitle') }}</h2>
             <label class="mt-4 block max-w-sm text-sm text-surface-700 dark:text-surface-300">{{ t('theme') }}
-              <AppDropdown v-model="settings.theme" :options="[{ value: 'dark', label: t('darkTheme') }, { value: 'light', label: t('lightTheme') }]" class="mt-2 w-full" />
+              <AppDropdown v-model="settings.theme" :options="[
+                { value: 'dark', label: t('darkTheme') },
+                { value: 'light', label: t('lightWhite') },
+                { value: 'light-cloud', label: t('lightCloud') },
+                { value: 'light-silver', label: t('lightSilver') },
+                { value: 'light-ash', label: t('lightAsh') },
+                { value: 'light-stone', label: t('lightStone') },
+              ]" class="mt-2 w-full" />
             </label>
             <label class="mt-5 flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300">
               <span><span class="block font-medium">{{ t('compactSidebar') }}</span><span class="mt-1 block text-xs text-surface-500">{{ t('compactSidebarDescription') }}</span></span>
@@ -135,8 +163,15 @@ const checkModel = async () => {
 
         <div v-else class="mt-5 grid gap-4 sm:grid-cols-2">
           <p class="text-sm text-surface-600 dark:text-surface-300 sm:col-span-2">{{ t('globalModelDescription') }}</p>
+          <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('modelProvider') }}
+            <AppDropdown v-model="globalProviderSelection" :options="[
+              { value: 'openai', label: 'OpenAI' },
+              { value: 'gemini', label: 'Gemini' },
+              { value: 'deepseek', label: 'DeepSeek' },
+            ]" class="mt-2 w-full max-w-md" />
+          </label>
           <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('modelEndpoint') }}
-            <input v-model.trim="settings.globalModel.endpoint" type="url" placeholder="https://api.openai.com/v1" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
+            <input v-model.trim="settings.globalModel.endpoint" type="url" :placeholder="providerEndpoints[settings.globalModel.provider]" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
           </label>
           <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('apiKey') }}
             <input v-model.trim="settings.globalModel.apiKey" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
@@ -163,7 +198,7 @@ const checkModel = async () => {
         <AiConnectionGuide :provider="settings.modelProvider" />
       </section>
         </template>
-        <template #comfy><ComfySettings /></template>
+        <template #comfy><ComfySettings v-if="activeTab === 'comfy'" /></template>
       </UTabs>
 
       <button type="button" class="mt-5 rounded-xl border border-surface-200 px-4 py-2 text-xs font-medium text-surface-600 transition hover:bg-surface-100 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800" @click="reset">{{ t('resetInterface') }}</button>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useFilePrompts } from '~/composables/useFilePrompts'
+import type { LocalFile } from '~/types/file'
 
 const { activeFile, files, selectedFiles, addTagToFile, updateFileNote, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk } = useFiles()
 const showFilePreview = useState('show-file-preview', () => false)
@@ -20,6 +21,9 @@ const {
   lastQuestion,
   lastError,
   availableModels,
+  pendingFileEdits,
+  confirmPendingFileEdit,
+  dismissPendingFileEdit,
   connectionStatus,
   activeModelConfig,
   isModelEnabled,
@@ -33,6 +37,9 @@ const {
 const { t } = useLanguage()
 const { settings } = useSettings()
 const imagePreview = ref<string | null>(null)
+const documentPreviewFile = ref<LocalFile | null>(null)
+const lastPreviewedFileId = useState<number | null>('last-document-preview-file-id', () => null)
+const lastPreviewStorageKey = 'owlsift-last-previewed-file-id'
 let imagePreviewRequest = 0
 
 const rightTab = useState<'chat' | 'summary'>('ai-panel-tab', () => 'chat')
@@ -159,10 +166,29 @@ const saveTag = async () => {
 }
 
 const openSelectedFile = async () => {
-  if (!activeFile.value) return
+  let rememberedId = lastPreviewedFileId.value
+  if (!rememberedId && import.meta.client) {
+    try {
+      const stored = Number(localStorage.getItem(lastPreviewStorageKey))
+      if (Number.isSafeInteger(stored) && stored > 0) rememberedId = stored
+    } catch { /* The in-memory selection still works if browser storage is unavailable. */ }
+  }
+  const rememberedFile = rememberedId ? files.value.find(file => file.id === rememberedId) : undefined
+  const file = activeFile.value ?? rememberedFile
+  if (!file) return
+  activeFile.value = file
   fileActionError.value = ''
+  documentPreviewFile.value = file
+  lastPreviewedFileId.value = file.id
+  if (import.meta.client) try { localStorage.setItem(lastPreviewStorageKey, String(file.id)) } catch { /* Keep the current preview available for this session. */ }
+}
+
+const openPreviewExternally = async () => {
+  const file = documentPreviewFile.value
+  if (!file) return
   try {
-    await openIndexedFile(activeFile.value.id)
+    await openIndexedFile(file.id)
+    documentPreviewFile.value = null
   } catch (error) {
     console.error('Could not open indexed file:', error)
     fileActionError.value = t('fileOpenError')
@@ -443,9 +469,20 @@ const confirmDeleteFile = async () => {
           </div>
 
           <ChatMessageContent :text="message.text" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
-          <AiCreatedFiles :files="message.attachments ?? []" :title="t('chatAttachments')" />
+          <div v-if="message.sender === 'user' && message.attachments?.length" class="mt-2 flex min-w-0 flex-wrap gap-1.5">
+            <ChatFileAttachment v-for="file in message.attachments" :key="file.path ?? file.id" :file="file" :label="file.name" />
+          </div>
         <AiCreatedFiles :files="message.createdFiles ?? []" />
         <AiCreatedFiles :files="message.editedFiles ?? []" :title="t('editedDocuments')" />
+        <div v-if="message.sender === 'ai' && message.pendingEditId && pendingFileEdits[message.pendingEditId]" class="mt-3 rounded-xl border border-primary-500/30 bg-primary-500/5 p-3">
+          <p class="text-xs leading-relaxed">{{ t('confirmSuggestedFileEdit') }} <strong>{{ pendingFileEdits[message.pendingEditId]?.name }}</strong></p>
+          <div class="mt-2 flex flex-wrap gap-2">
+            <button type="button" class="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white disabled:cursor-not-allowed disabled:opacity-50" :disabled="pendingFileEdits[message.pendingEditId]?.applying" @click="confirmPendingFileEdit(message)">
+              {{ pendingFileEdits[message.pendingEditId]?.applying ? t('applyingFileEdit') : t('applyFileEdit') }}
+            </button>
+            <button type="button" class="rounded-lg border border-surface-300 px-3 py-1.5 text-xs text-surface-600 dark:border-surface-600 dark:text-surface-300" :disabled="pendingFileEdits[message.pendingEditId]?.applying" @click="dismissPendingFileEdit(message)">{{ t('keepFileUnchanged') }}</button>
+          </div>
+        </div>
         </div>
 
         <!-- Thinking -->
@@ -739,4 +776,5 @@ const confirmDeleteFile = async () => {
       </section>
     </div>
   </Teleport>
+  <DocumentPreviewModal :file="documentPreviewFile" :open-error="fileActionError" @close="documentPreviewFile = null" @open-external="openPreviewExternally" />
 </template>

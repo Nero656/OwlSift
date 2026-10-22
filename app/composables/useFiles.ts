@@ -1,7 +1,9 @@
 import { isHiddenPath } from '../../src/utils/fileVisibility'
+import { imageFileExtensions, scriptFileExtensions } from '../utils/fileTypeGroups'
 import type { IndexedFolder, LocalFile } from '../types/file'
 import { createDocumentBlob, extractDocumentText, storeDocumentBlob } from '../utils/documents'
 import { creatableFileTypes, defaultFileTemplate } from './useFileTypes'
+import { useLanguage } from './useLanguage'
 
 interface IndexedFileRecord {
   id: number
@@ -27,10 +29,10 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function toLocalFile(file: IndexedFileRecord): LocalFile {
+function toLocalFile(file: IndexedFileRecord, locale: string): LocalFile {
   return {
     id: file.id, name: file.name, path: file.path, extension: file.extension,
-    size: formatFileSize(file.size), mtime: new Date(file.mtime).toLocaleDateString(), mtimeValue: file.mtime,
+    size: formatFileSize(file.size), mtime: new Date(file.mtime).toLocaleDateString(locale), mtimeValue: file.mtime,
     tags: file.tags, snippet: file.snippet, summary: '', note: file.note ?? '', content: file.content,
   }
 }
@@ -63,6 +65,7 @@ async function createImageThumbnail(file: File): Promise<string | undefined> {
 }
 
 export const useFiles = () => {
+  const { language } = useLanguage()
   const { settings } = useSettings()
   const excludedBySettings = (path: string) => !settings.value.showSystemFiles && isHiddenPath(path)
   const excludedBrowserFiles = useState<LocalFile[]>('excluded-browser-files', () => [])
@@ -88,6 +91,14 @@ export const useFiles = () => {
   const fileDialogFolder = useState<string | null>('file-dialog-folder', () => null)
   const isCreateFileOpen = useState('create-file-open', () => false)
   let searchRequestId = 0
+
+  const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString(language.value)
+  watch(language, () => {
+    const localize = (file: LocalFile) => file.mtimeValue ? { ...file, mtime: formatDate(file.mtimeValue) } : file
+    files.value = files.value.map(localize)
+    if (searchResults.value) searchResults.value = searchResults.value.map(localize)
+    if (activeFile.value) activeFile.value = localize(activeFile.value)
+  })
 
   const saveBrowserState = () => {
     if (!import.meta.client || isDesktop()) return
@@ -174,7 +185,7 @@ export const useFiles = () => {
     }
     await syncSystemFilesPreference()
     const [records, indexedFolders] = await Promise.all([window.electron.invoke('files:list'), window.electron.invoke('files:folders')])
-    files.value = records.map(toLocalFile)
+    files.value = records.map(record => toLocalFile(record, language.value))
     folders.value = indexedFolders
     selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
     if (selectedFolder.value && !folders.value.some(folder => folder.name === selectedFolder.value)) selectedFolder.value = null
@@ -247,7 +258,7 @@ export const useFiles = () => {
       path: `${targetPath}/${source.name}`,
       extension,
       size: formatFileSize(source.size),
-      mtime: new Date(source.lastModified || Date.now()).toLocaleDateString(),
+      mtime: formatDate(source.lastModified || Date.now()),
       mtimeValue: source.lastModified || Date.now(),
       tags: [],
       snippet: content.slice(0, 240) || (extension ? `.${extension.toUpperCase()} file` : 'File'),
@@ -429,7 +440,7 @@ export const useFiles = () => {
       // Browser imports are project copies. No disk access is requested or implied.
       await storeDocumentBlob(current.path, blob)
       const mtimeValue = Date.now()
-      updateBrowserFile(fileId, file => ({ ...file, content, snippet: content.slice(0, 240), summary: '', contentError: undefined, size: formatFileSize(blob.size), mtimeValue, mtime: new Date(mtimeValue).toLocaleDateString() }))
+      updateBrowserFile(fileId, file => ({ ...file, content, snippet: content.slice(0, 240), summary: '', contentError: undefined, size: formatFileSize(blob.size), mtimeValue, mtime: formatDate(mtimeValue) }))
     }
     if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
     return files.value.find(file => file.id === fileId)!
@@ -550,14 +561,18 @@ export const useFiles = () => {
     }
     const records = await window.electron.invoke('files:search', query)
     if (request !== searchRequestId) return
-    searchResults.value = records.map(toLocalFile)
+    searchResults.value = records.map(record => toLocalFile(record, language.value))
   }
 
   const filteredFiles = computed(() => {
     const source = searchQuery.value.trim() && searchResults.value !== null ? searchResults.value : files.value
     return source.filter(file => {
       if (excludedBySettings(file.path)) return false
-      const matchesType = !selectedType.value || file.extension === selectedType.value
+      const extension = file.extension.toLowerCase()
+      const matchesType = !selectedType.value
+        || (selectedType.value === '__scripts__' ? scriptFileExtensions.has(extension)
+          : selectedType.value === '__images__' ? imageFileExtensions.has(extension)
+            : extension === selectedType.value.toLowerCase())
       const matchesTag = !selectedTag.value || file.tags.includes(selectedTag.value)
       const folderPath = folders.value.find(folder => folder.name === selectedFolder.value)?.path
       return matchesType && matchesTag && (!selectedFolder.value || file.path === folderPath || file.path.startsWith(`${folderPath ?? selectedFolder.value}/`) || file.path.startsWith(folderPath ?? selectedFolder.value))
@@ -565,6 +580,7 @@ export const useFiles = () => {
       if (sortBy.value === 'date') return (b.mtimeValue ?? 0) - (a.mtimeValue ?? 0)
       if (sortBy.value === 'name') return a.name.localeCompare(b.name)
       if (sortBy.value === 'tag') return (a.tags[0] ?? '').localeCompare(b.tags[0] ?? '') || a.name.localeCompare(b.name)
+      if (sortBy.value === 'type') return a.extension.localeCompare(b.extension) || a.name.localeCompare(b.name)
       return 0
     })
   })

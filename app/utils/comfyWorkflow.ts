@@ -1,10 +1,10 @@
 import type { ComfySettings, ComfyWorkflow, ComfyNodeCatalog, WorkflowAssessment, MediaKind, MediaOutput } from '~/types/media'
-export const defaultComfySettings = (): ComfySettings => ({ enabled: false, endpoint: 'http://127.0.0.1:8188', serverToken: '', transport: 'proxy', workflowMode: 'builtin', checkpoint: '', workflowJson: '', promptBinding: { node: '', input: 'text' }, negativeBinding: { node: '', input: 'text' }, seedBinding: { node: '', input: 'seed' }, localOnly: true, cloudApiKey: '' })
+export const defaultComfySettings = (): ComfySettings => ({ enabled: false, endpoint: 'http://localhost:8188', serverToken: '', transport: 'proxy', workflowMode: 'builtin', checkpoint: '', zImageDiffusionModel: 'z_image_turbo_bf16.safetensors', zImageTextEncoder: 'qwen_3_4b.safetensors', zImageVae: 'ae.safetensors', workflowJson: '', promptBinding: { node: '', input: 'text' }, negativeBinding: { node: '', input: 'text' }, seedBinding: { node: '', input: 'seed' }, localOnly: true, cloudApiKey: '' })
 export function normalizeComfySettings(value?: Partial<ComfySettings>): ComfySettings {
   const initial = defaultComfySettings()
-  const text = (key: 'endpoint' | 'serverToken' | 'checkpoint' | 'workflowJson' | 'cloudApiKey') => typeof value?.[key] === 'string' ? value[key] : initial[key]
+  const text = (key: 'endpoint' | 'serverToken' | 'checkpoint' | 'zImageDiffusionModel' | 'zImageTextEncoder' | 'zImageVae' | 'workflowJson' | 'cloudApiKey') => typeof value?.[key] === 'string' ? value[key] : initial[key]
   const binding = (key: 'promptBinding' | 'negativeBinding' | 'seedBinding') => ({ node: typeof value?.[key]?.node === 'string' ? value[key].node : initial[key].node, input: typeof value?.[key]?.input === 'string' ? value[key].input : initial[key].input })
-  return { enabled: value?.enabled === true, endpoint: text('endpoint'), serverToken: text('serverToken'), checkpoint: text('checkpoint'), workflowJson: text('workflowJson'), cloudApiKey: text('cloudApiKey'), localOnly: value?.localOnly !== false, transport: value?.transport === 'direct' ? 'direct' : 'proxy', workflowMode: value?.workflowMode === 'custom' ? 'custom' : 'builtin', promptBinding: binding('promptBinding'), negativeBinding: binding('negativeBinding'), seedBinding: binding('seedBinding') }
+  return { enabled: value?.enabled === true, endpoint: text('endpoint'), serverToken: text('serverToken'), checkpoint: text('checkpoint'), zImageDiffusionModel: text('zImageDiffusionModel'), zImageTextEncoder: text('zImageTextEncoder'), zImageVae: text('zImageVae'), workflowJson: text('workflowJson'), cloudApiKey: text('cloudApiKey'), localOnly: value?.localOnly !== false, transport: value?.transport === 'direct' ? 'direct' : 'proxy', workflowMode: value?.workflowMode === 'custom' ? 'custom' : value?.workflowMode === 'z-image-turbo' ? 'z-image-turbo' : 'builtin', promptBinding: binding('promptBinding'), negativeBinding: binding('negativeBinding'), seedBinding: binding('seedBinding') }
 }
 export function parseComfyWorkflow(text: string): ComfyWorkflow {
   if (text.length > 2000000) throw new Error('Workflow JSON is too large (maximum 2 MB).')
@@ -28,7 +28,21 @@ export function builtInImageWorkflow(checkpoint: string): ComfyWorkflow {
     '9': { class_type: 'SaveImage', inputs: { filename_prefix: 'OwlSift', images: ['8', 0] } },
   }
 }
-const builtinLocalNodes = new Set(['KSampler', 'CheckpointLoaderSimple', 'EmptyLatentImage', 'CLIPTextEncode', 'VAEDecode', 'SaveImage'])
+export function builtInZImageTurboWorkflow(settings: ComfySettings): ComfyWorkflow {
+  return {
+    '1': { class_type: 'UNETLoader', inputs: { unet_name: settings.zImageDiffusionModel, weight_dtype: 'default' } },
+    '2': { class_type: 'CLIPLoader', inputs: { clip_name: settings.zImageTextEncoder, type: 'lumina2', device: 'default' } },
+    '3': { class_type: 'VAELoader', inputs: { vae_name: settings.zImageVae } },
+    '4': { class_type: 'CLIPTextEncode', inputs: { text: '', clip: ['2', 0] } },
+    '5': { class_type: 'ConditioningZeroOut', inputs: { conditioning: ['4', 0] } },
+    '6': { class_type: 'EmptySD3LatentImage', inputs: { width: 1024, height: 1024, batch_size: 1 } },
+    '7': { class_type: 'ModelSamplingAuraFlow', inputs: { model: ['1', 0], shift: 3 } },
+    '8': { class_type: 'KSampler', inputs: { seed: 1, steps: 8, cfg: 1, sampler_name: 'res_multistep', scheduler: 'simple', denoise: 1, model: ['7', 0], positive: ['4', 0], negative: ['5', 0], latent_image: ['6', 0] } },
+    '9': { class_type: 'VAEDecode', inputs: { samples: ['8', 0], vae: ['3', 0] } },
+    '10': { class_type: 'SaveImage', inputs: { filename_prefix: 'OwlSift_ZImageTurbo', images: ['9', 0] } },
+  }
+}
+const builtinLocalNodes = new Set(['KSampler', 'CheckpointLoaderSimple', 'EmptyLatentImage', 'CLIPTextEncode', 'VAEDecode', 'SaveImage', 'UNETLoader', 'CLIPLoader', 'VAELoader', 'ConditioningZeroOut', 'EmptySD3LatentImage', 'ModelSamplingAuraFlow'])
 export function assessWorkflow(workflow: ComfyWorkflow, catalog: ComfyNodeCatalog): WorkflowAssessment {
   const cloudNodes: string[] = [], unknownNodes: string[] = [], missingNodes: string[] = []
   for (const type of new Set(Object.values(workflow).map(node => node.class_type))) {
@@ -40,7 +54,7 @@ export function assessWorkflow(workflow: ComfyWorkflow, catalog: ComfyNodeCatalo
   return { execution: cloudNodes.length ? 'cloud' : (unknownNodes.length || missingNodes.length) ? 'unverified' : 'local', cloudNodes, unknownNodes, missingNodes }
 }
 export function prepareImageWorkflow(settings: ComfySettings, params: { prompt: string; negative: string; seed: number; width: number; height: number }): ComfyWorkflow {
-  const workflow = settings.workflowMode === 'builtin' ? builtInImageWorkflow(settings.checkpoint) : parseComfyWorkflow(settings.workflowJson)
+  const workflow = settings.workflowMode === 'builtin' ? builtInImageWorkflow(settings.checkpoint) : settings.workflowMode === 'z-image-turbo' ? builtInZImageTurboWorkflow(settings) : parseComfyWorkflow(settings.workflowJson)
   const setInput = (binding: { node: string; input: string }, value: string | number, required = false) => {
     if (!binding.node && !required) return
     const node = workflow[binding.node]
@@ -52,6 +66,11 @@ export function prepareImageWorkflow(settings: ComfySettings, params: { prompt: 
     if (!settings.checkpoint) throw new Error('Select an installed SD 1.x / SDXL checkpoint first.')
     workflow['6']!.inputs.text = params.prompt; workflow['7']!.inputs.text = params.negative
     workflow['3']!.inputs.seed = params.seed; workflow['5']!.inputs.width = params.width; workflow['5']!.inputs.height = params.height
+  } else if (settings.workflowMode === 'z-image-turbo') {
+    workflow['4']!.inputs.text = params.prompt
+    workflow['8']!.inputs.seed = params.seed
+    workflow['6']!.inputs.width = params.width
+    workflow['6']!.inputs.height = params.height
   } else {
     setInput(settings.promptBinding, params.prompt, true)
     setInput(settings.negativeBinding, params.negative)

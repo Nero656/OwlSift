@@ -1,7 +1,14 @@
 <script setup lang="ts">
 defineProps<{ provider: 'local' | 'global' }>()
+const { settings } = useSettings()
 const { language } = useLanguage()
 const error = ref('')
+const remoteEndpoint = computed(() => settings.value.globalModel.endpoint || ({
+  openai: 'https://api.openai.com/v1',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta/openai',
+  deepseek: 'https://api.deepseek.com',
+}[settings.value.globalModel.provider]))
+const remoteProviderName = computed(() => ({ openai: 'OpenAI', gemini: 'Gemini', deepseek: 'DeepSeek' }[settings.value.globalModel.provider]))
 const text = computed(() => language.value === 'ru' ? {
   title: 'Как подключить ИИ-модель',
   local: 'LM Studio на вашем компьютере',
@@ -19,9 +26,9 @@ const text = computed(() => language.value === 'ru' ? {
   docker: 'host.docker.internal подходит для обращений из Docker Desktop, но может не разрешаться в браузере. Для общего адреса браузера и контейнера используйте IP Windows.',
   global: 'Глобальный OpenAI-совместимый API',
   globalSteps: [
-    'В кабинете провайдера создайте API-ключ и найдите базовый адрес OpenAI-совместимого API.',
-    'Выберите «Глобальная модель» и укажите адрес API без /models и /chat/completions в конце.',
-    'Вставьте API-ключ того же провайдера. Ключ от другого сервиса не подходит для api.openai.com.',
+    'Создайте API-ключ в кабинете OpenAI, Google AI Studio или DeepSeek Platform.',
+    'Выберите «Глобальная модель», затем провайдера OpenAI, Gemini или DeepSeek. Адрес API можно оставить автоматически заполненным.',
+    'Используйте API-ключ, созданный именно для выбранного провайдера.',
     'Нажмите «Проверить подключение», выберите модель из списка, затем откройте ИИ-ассистент и задайте вопрос.',
   ],
   compatibility: 'Для этой интеграции провайдер должен поддерживать список моделей /models и чат /chat/completions. Адрес и API-ключ берите из документации выбранного провайдера.',
@@ -35,7 +42,7 @@ const text = computed(() => language.value === 'ru' ? {
     ['Empty response', 'Попробуйте другую модель или проверьте лимит генерации на сервере. PDF-сканы без текстового слоя требуют OCR.'],
   ],
   docs: 'Официальная документация',
-  links: { lmServer: 'LM Studio: настройки сервера и CORS', lmCompat: 'LM Studio: OpenAI-совместимый API', openaiStart: 'OpenAI: начало работы', openaiKeys: 'OpenAI: управление API-ключами', openaiErrors: 'OpenAI: коды ошибок' },
+  links: { lmServer: 'LM Studio: настройки сервера и CORS', lmCompat: 'LM Studio: OpenAI-совместимый API', openaiStart: 'OpenAI: начало работы', openaiKeys: 'OpenAI: управление API-ключами', openaiErrors: 'OpenAI: коды ошибок', geminiApi: 'Gemini: OpenAI-совместимый API', deepseekApi: 'DeepSeek: API и модели' },
   openError: 'Не удалось открыть системный браузер. Скопируйте адрес ссылки и откройте его вручную.',
 } : {
   title: 'How to connect an AI model',
@@ -54,9 +61,9 @@ const text = computed(() => language.value === 'ru' ? {
   docker: 'host.docker.internal works for Docker Desktop requests but may not resolve in the browser. Use the Windows IP for an address shared by the browser and container.',
   global: 'Global OpenAI-compatible API',
   globalSteps: [
-    'Create an API key in your provider account and find its OpenAI-compatible API base URL.',
-    'Select Global model and enter the API base URL, without /models or /chat/completions at the end.',
-    'Paste an API key issued by the same provider. A key from another service will not work with api.openai.com.',
+    'Create an API key in OpenAI, Google AI Studio, or the DeepSeek Platform.',
+    'Select Global model, then choose OpenAI, Gemini, or DeepSeek. The API address is filled in automatically.',
+    'Use an API key issued by the provider you selected.',
     'Click Test connection, choose a model from the list, then open the AI assistant and ask a question.',
   ],
   compatibility: 'This integration needs a /models endpoint and a /chat/completions endpoint. Get the base URL and API key from your selected provider’s documentation.',
@@ -70,7 +77,7 @@ const text = computed(() => language.value === 'ru' ? {
     ['Empty response', 'Try another model or check the server generation limit. Scanned PDFs without a text layer require OCR.'],
   ],
   docs: 'Official documentation',
-  links: { lmServer: 'LM Studio: server settings and CORS', lmCompat: 'LM Studio: OpenAI-compatible API', openaiStart: 'OpenAI: quickstart', openaiKeys: 'OpenAI: API key management', openaiErrors: 'OpenAI: error codes' },
+  links: { lmServer: 'LM Studio: server settings and CORS', lmCompat: 'LM Studio: OpenAI-compatible API', openaiStart: 'OpenAI: quickstart', openaiKeys: 'OpenAI: API key management', openaiErrors: 'OpenAI: error codes', geminiApi: 'Gemini: OpenAI-compatible API', deepseekApi: 'DeepSeek: API and models' },
   openError: 'Could not open the system browser. Copy the link address and open it manually.',
 })
 const links = {
@@ -79,6 +86,8 @@ const links = {
   openaiStart: 'https://developers.openai.com/api/docs/quickstart',
   openaiKeys: 'https://platform.openai.com/api-keys',
   openaiErrors: 'https://developers.openai.com/api/docs/guides/error-codes',
+  geminiApi: 'https://ai.google.dev/gemini-api/docs/openai',
+  deepseekApi: 'https://api-docs.deepseek.com/guides/codex',
 } as const
 const openDoc = async (event: MouseEvent, id: keyof typeof links) => {
   if (!window.electron) return
@@ -105,8 +114,8 @@ const openDoc = async (event: MouseEvent, id: keyof typeof links) => {
       <section v-else class="space-y-3">
         <h3 class="font-semibold text-surface-900 dark:text-surface-100">{{ text.global }}</h3>
         <ol class="list-decimal space-y-2 pl-5"><li v-for="step in text.globalSteps" :key="step">{{ step }}</li></ol>
-        <p class="text-xs">{{ text.endpoint }} — OpenAI</p>
-        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">https://api.openai.com/v1</code>
+        <p class="text-xs">{{ text.endpoint }} — {{ remoteProviderName }}</p>
+        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">{{ remoteEndpoint }}</code>
         <p>{{ text.compatibility }}</p>
         <p class="text-xs">{{ text.privacy }}</p>
       </section>

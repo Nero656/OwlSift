@@ -79,6 +79,8 @@ electron_1.app.whenReady().then(() => {
             openaiStart: 'https://developers.openai.com/api/docs/quickstart',
             openaiKeys: 'https://platform.openai.com/api-keys',
             openaiErrors: 'https://developers.openai.com/api/docs/guides/error-codes',
+            geminiApi: 'https://ai.google.dev/gemini-api/docs/openai',
+            deepseekApi: 'https://api-docs.deepseek.com/api/list-models/',
         };
         if (!Object.hasOwn(docs, id))
             throw new Error('Unknown documentation link');

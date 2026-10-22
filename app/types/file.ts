@@ -31,10 +31,11 @@ export interface ChatFileReference {
 export interface ChatMessage {
     createdAt?: number
     provider?: 'comfy'
-    mediaGeneration?: { provider: 'comfy'; jobId: string; kind: 'image' | 'audio' | 'video'; execution: 'local' | 'cloud' | 'unverified' }
+    mediaGeneration?: { provider: 'comfy'; jobId: string; kind: 'image' | 'audio' | 'video'; execution: 'local' | 'cloud' | 'unverified'; prompt?: string }
     sender: 'user' | 'ai'
     text: string
     attachments?: ChatFileReference[]
     editedFiles?: ChatFileReference[]
     createdFiles?: ChatFileReference[]
+    pendingEditId?: string
 }

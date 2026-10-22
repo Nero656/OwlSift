@@ -6,8 +6,11 @@ export interface ComfySettings {
   endpoint: string
   serverToken: string
   transport: 'proxy' | 'direct'
-  workflowMode: 'builtin' | 'custom'
+  workflowMode: 'builtin' | 'z-image-turbo' | 'custom'
   checkpoint: string
+  zImageDiffusionModel: string
+  zImageTextEncoder: string
+  zImageVae: string
   workflowJson: string
   promptBinding: MediaBinding
   negativeBinding: MediaBinding
