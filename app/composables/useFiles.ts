@@ -564,6 +564,19 @@ export const useFiles = () => {
     searchResults.value = records.map(record => toLocalFile(record, language.value))
   }
 
+  const searchAllIndexedFiles = async (query: string): Promise<LocalFile[]> => {
+    let results: LocalFile[]
+    if (!query.trim()) results = files.value
+    else if (!isDesktop()) {
+      const terms = query.toLocaleLowerCase().split(/\s+/).map(term => term.replace(/^#+/, '')).filter(Boolean)
+      results = files.value.filter(file => terms.every(term => [file.name, file.snippet, file.note, file.content ?? '', ...file.tags].join(' ').toLocaleLowerCase().includes(term)))
+    } else {
+      const records = await window.electron.invoke('files:search', query)
+      results = records.map(record => toLocalFile(record, language.value))
+    }
+    return results.filter(file => !excludedBySettings(file.path))
+  }
+
   const filteredFiles = computed(() => {
     const source = searchQuery.value.trim() && searchResults.value !== null ? searchResults.value : files.value
     return source.filter(file => {
@@ -595,7 +608,7 @@ export const useFiles = () => {
   return {
     importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
     selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
-    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles,
+    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles, searchAllIndexedFiles,
     fileDialogFolder, isCreateFileOpen, openCreateFileDialog,
   }
 }

@@ -239,6 +239,10 @@ const attachDocuments = (added: LocalFile[]) => {
   attachedIds.value = [...new Set([...attachedIds.value, ...added.map(file => file.id)])]
 }
 
+const detachDocument = (id: number) => {
+  attachedIds.value = attachedIds.value.filter(attachedId => attachedId !== id)
+}
+
 const connectModels = async () => {
   if (!isModelEnabled.value || !activeModelConfig.value.endpoint.trim() || isConnecting.value) return
   isConnecting.value = true
@@ -375,6 +379,25 @@ const connectModels = async () => {
             :title="t('composerCommands')"
           ><Icon name="lucide:plus" size="17" /></button>
         </UDropdownMenu>
+        <div v-if="attachedFiles.length" class="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto py-0.5 [scrollbar-width:thin]" :aria-label="t('chatAttachments')">
+          <span
+            v-for="file in attachedFiles"
+            :key="file.id"
+            class="inline-flex max-w-44 shrink-0 items-center gap-1 rounded-lg border border-surface-300/70 bg-surface-200/70 py-1 pl-2 pr-1 text-[11px] text-surface-700 dark:border-surface-600/70 dark:bg-surface-700/70 dark:text-surface-200"
+            :title="file.path"
+          >
+            <Icon :name="['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg'].includes(file.extension.toLowerCase()) ? 'lucide:image' : 'lucide:file-text'" size="13" class="shrink-0 text-primary-500" />
+            <span class="min-w-0 truncate">{{ file.name }}</span>
+            <button
+              type="button"
+              class="flex h-5 w-5 shrink-0 items-center justify-center rounded-md text-surface-500 transition hover:bg-surface-300 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-surface-600"
+              :disabled="isThinking || generatingImage"
+              :aria-label="`${t('removeAttachment')}: ${file.name}`"
+              :title="t('removeAttachment')"
+              @click="detachDocument(file.id)"
+            ><Icon name="lucide:x" size="12" /></button>
+          </span>
+        </div>
         <div class="ml-auto flex min-w-0 items-center gap-1.5">
           <UDropdownMenu
             v-if="availableModels.length"

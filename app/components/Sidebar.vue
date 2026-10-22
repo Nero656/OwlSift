@@ -55,6 +55,12 @@ const navItems = computed(() => [
     badge: String(folders.value.length)
   },
   {
+    id: 'documents',
+    label: t('documentsPage'),
+    route: '/documents',
+    icon: 'lucide:files'
+  },
+  {
     id: 'ai',
     label: t('aiAssistant'),
     route: '/ai_assistant',
