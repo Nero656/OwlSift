@@ -21,6 +21,17 @@ const globalApiHost = computed(() => {
   try { return new URL(settings.value.globalModel.endpoint.trim()).host } catch { return '' }
 })
 const canTestModel = computed(() => settings.value.modelProvider === 'global' ? Boolean(settings.value.globalModel.endpoint.trim()) : settings.value.localModel.enabled && Boolean(settings.value.localModel.endpoint.trim()))
+const localProviderSelection = computed({
+  get: () => settings.value.localModel.provider,
+  set: (provider: 'lmstudio' | 'ollama') => {
+    const config = settings.value.localModel
+    const knownEndpoints = ['http://127.0.0.1:1234/v1', 'http://localhost:11434', 'http://127.0.0.1:11434']
+    const currentEndpoint = config.endpoint.replace(/\/+$/, '')
+    config.provider = provider
+    if (!currentEndpoint || knownEndpoints.includes(currentEndpoint)) config.endpoint = provider === 'ollama' ? 'http://localhost:11434' : 'http://127.0.0.1:1234/v1'
+    config.model = ''
+  },
+})
 
 watch(settings, () => {
   savedLabel.value = t('settingsSaved')
@@ -28,6 +39,8 @@ watch(settings, () => {
   savedTimer = setTimeout(() => { savedLabel.value = '' }, 1800)
 }, { deep: true })
 
+const responseToastDurations = [3000, 5000, 8000, 10000]
+const responseToastDurationOptions = computed(() => responseToastDurations.map(value => ({ value, label: `${value / 1000} ${t('seconds')}` })))
 const languageOptions = computed(() => supportedLanguages.map(option => ({
   ...option,
   label: getLanguageName(option.value, language.value),
@@ -84,6 +97,16 @@ const checkModel = async () => {
                 <span>{{ option.label }}</span><Icon v-if="language === option.value" name="lucide:check" size="16" />
               </button>
             </div>
+          </section>
+          <section class="mt-5 rounded-2xl border border-surface-200 bg-white p-4 sm:p-6 dark:border-surface-800 dark:bg-surface-900">
+            <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-100">{{ t('aiResponseNotificationsTitle') }}</h2>
+            <label class="mt-4 flex items-center justify-between gap-4 text-sm text-surface-700 dark:text-surface-300">
+              <span><span class="block font-medium">{{ t('aiResponseNotifications') }}</span><span class="mt-1 block text-xs text-surface-500">{{ t('aiResponseNotificationsDescription') }}</span></span>
+              <input v-model="settings.aiResponseNotifications" type="checkbox" class="h-5 w-5 shrink-0 accent-primary-600">
+            </label>
+            <label class="mt-5 block max-w-sm text-sm text-surface-700 dark:text-surface-300" :class="!settings.aiResponseNotifications && 'opacity-50'">{{ t('aiResponseToastDuration') }}
+              <AppDropdown v-model="settings.aiResponseToastDuration" :options="responseToastDurationOptions" :disabled="!settings.aiResponseNotifications" class="mt-2 w-full" />
+            </label>
           </section>
         </template>
         <template #appearance>
@@ -143,13 +166,16 @@ const checkModel = async () => {
               <div class="mt-5 flex items-start justify-between gap-4">
                 <div>
                   <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">{{ t('localModelTitle') }}</h3>
-                  <p class="mt-1 text-xs text-surface-500">{{ t('localModelDescription') }}</p>
+                  <p class="mt-1 text-xs text-surface-500">{{ settings.localModel.provider === 'ollama' ? t('ollamaModelDescription') : t('localModelDescription') }}</p>
                 </div>
                 <input v-model="settings.localModel.enabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary-600" :aria-label="t('localModelTitle')">
               </div>
               <div class="mt-5 grid gap-4 sm:grid-cols-2" :class="!settings.localModel.enabled && 'opacity-50'">
+                <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('localBackend') }}
+                  <AppDropdown v-model="localProviderSelection" :options="[{ value: 'lmstudio', label: 'LM Studio' }, { value: 'ollama', label: 'Ollama' }]" :disabled="!settings.localModel.enabled" class="mt-2 w-full max-w-md" />
+                </label>
                 <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('modelEndpoint') }}
-                  <input v-model.trim="settings.localModel.endpoint" :disabled="!settings.localModel.enabled" type="url" placeholder="http://127.0.0.1:1234/v1" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
+                  <input v-model.trim="settings.localModel.endpoint" :disabled="!settings.localModel.enabled" type="url"  :placeholder="settings.localModel.provider === 'ollama' ? 'http://localhost:11434' : 'http://127.0.0.1:1234/v1'" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
                 </label>
                 <label v-if="connectionStatus === 'ok'" class="text-sm text-surface-700 dark:text-surface-300">{{ t('modelName') }}
                   <AppDropdown v-model="settings.localModel.model" :options="availableModels.map(value => ({ value, label: value }))" :placeholder="availableModels.length ? t('selectModel') : t('noModelsFound')" :disabled="availableModels.length === 0" class="mt-2 w-full" />
@@ -189,13 +215,12 @@ const checkModel = async () => {
 
         <div class="mt-4 flex flex-wrap items-center gap-3">
           <button type="button" class="rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="!canTestModel || isTesting" @click="checkModel">
-            {{ isTesting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection')) }}
+            {{ isTesting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? (settings.localModel.provider === 'ollama' ? t('connectOllama') : t('connectLmStudio')) : t('testConnection')) }}
           </button>
           <p v-if="connectionStatus === 'ok'" class="text-xs text-primary-600">{{ t('connectionOk') }} {{ availableModels.length }}</p>
           <p v-else-if="connectionStatus === 'error'" class="text-xs text-rose-500">{{ lastError }}</p>
         </div>
-        <p v-if="settings.modelProvider === 'local'" class="mt-3 text-[11px] text-surface-400">{{ t('ollamaHint') }}</p>
-        <AiConnectionGuide :provider="settings.modelProvider" />
+        <AiConnectionGuide :provider="settings.modelProvider" :local-provider="settings.localModel.provider" />
       </section>
         </template>
         <template #comfy><ComfySettings v-if="activeTab === 'comfy'" /></template>

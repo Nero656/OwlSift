@@ -6,7 +6,7 @@
     "esModuleInterop": true,
     "strict": true,
     "skipLibCheck": true,
-    "outDir": "./dist",
+    "outDir": "./.electron-tsc",
     "rootDir": "./src"
   },
   "include": ["src/**/*"],

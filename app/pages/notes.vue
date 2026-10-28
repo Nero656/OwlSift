@@ -1,12 +1,18 @@
 <script setup lang="ts">
 import type { LocalFile } from '~/types/file'
+import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibility'
+import { imageFileExtensions } from '~/utils/fileTypeGroups'
 
 const {
   files, activeFile, selectFile, loadIndex, addTagToFile, removeTagFromFile, updateFileNote,
 } = useFiles()
+const { settings } = useSettings()
 const { t } = useLanguage()
 
 const query = ref('')
+const contentType = ref<'all' | 'text' | 'image' | 'document' | 'other'>('all')
+const extensionFilter = ref('')
+const currentPage = ref(1)
 const noteDraft = ref('')
 const tagDraft = ref('')
 const tagInputOpen = ref(false)
@@ -14,13 +20,49 @@ const saveError = ref(false)
 let noteTimer: ReturnType<typeof setTimeout> | undefined
 let pendingSave: { fileId: number; note: string } | undefined
 
+const textExtensions = new Set(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'xml', 'html', 'htm', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'vue', 'svelte', 'css', 'scss', 'yaml', 'yml', 'toml', 'sql', 'py', 'java', 'c', 'cpp', 'h', 'sh'])
+const documentExtensions = new Set(['pdf', 'doc', 'docx', 'odt', 'ppt', 'pptx', 'xls', 'xlsx', 'ods', 'odp'])
+const allUserFiles = computed(() => files.value.filter(file => !isAuxiliaryFilePath(file.path) && (settings.value.showSystemFiles || !isHiddenPath(file.path))))
+const extensionOptions = computed(() => [...new Set(allUserFiles.value.map(file => file.extension.toLowerCase()).filter(Boolean))].sort())
+const contentTypeOptions = computed(() => [
+  { value: 'all' as const, label: t('notesContentAll') },
+  { value: 'text' as const, label: t('notesContentText') },
+  { value: 'image' as const, label: t('notesContentImages') },
+  { value: 'document' as const, label: t('notesContentDocuments') },
+  { value: 'other' as const, label: t('notesContentOther') },
+])
+const extensionDropdownOptions = computed(() => [
+  { value: '', label: t('notesExtensionAll') },
+  ...extensionOptions.value.map(extension => ({ value: extension, label: `.${extension}` })),
+])
 const visibleFiles = computed(() => {
   const needle = query.value.trim().toLocaleLowerCase()
-  if (!needle) return files.value
-  return files.value.filter(file => [file.name, file.path, file.note, ...file.tags]
-    .some(value => value.toLocaleLowerCase().includes(needle)))
+  return allUserFiles.value.filter((file) => {
+    const extension = file.extension.toLowerCase()
+    const isText = textExtensions.has(extension)
+    const isImage = imageFileExtensions.has(extension)
+    const isDocument = documentExtensions.has(extension)
+    const matchesContent = contentType.value === 'all'
+      || (contentType.value === 'text' && isText)
+      || (contentType.value === 'image' && isImage)
+      || (contentType.value === 'document' && isDocument)
+      || (contentType.value === 'other' && !isText && !isImage && !isDocument)
+    const matchesExtension = !extensionFilter.value || extension === extensionFilter.value
+    const matchesQuery = !needle || [file.name, file.path, file.note, ...file.tags].some(value => value.toLocaleLowerCase().includes(needle))
+    return matchesContent && matchesExtension && matchesQuery
+  })
 })
-
+const pageSize = computed(() => Math.max(1, Number(settings.value.pageSize) || 50))
+const pageCount = computed(() => Math.max(1, Math.ceil(visibleFiles.value.length / pageSize.value)))
+const pagedFiles = computed(() => visibleFiles.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
+const firstVisible = computed(() => visibleFiles.value.length ? (currentPage.value - 1) * pageSize.value + 1 : 0)
+const lastVisible = computed(() => Math.min(currentPage.value * pageSize.value, visibleFiles.value.length))
+const selectedVisibleFile = computed(() => visibleFiles.value.find(file => file.id === activeFile.value?.id) ?? null)
+watch([query, contentType, extensionFilter], () => { currentPage.value = 1 })
+watch(pageCount, count => { if (currentPage.value > count) currentPage.value = count })
+watch(visibleFiles, list => {
+  if (activeFile.value && !list.some(file => file.id === activeFile.value?.id) && list[0]) selectFile(list[0])
+})
 const persistPendingNote = async () => {
   if (!pendingSave) return
   const save = pendingSave
@@ -80,7 +122,7 @@ const deleteTag = async (tag: string) => {
 
 onMounted(async () => {
   if (!files.value.length) await loadIndex()
-  if (!activeFile.value && files.value.length) selectFile(files.value[0]!)
+  if (!selectedVisibleFile.value && visibleFiles.value.length) selectFile(visibleFiles.value[0]!)
 })
 
 onBeforeUnmount(() => { void persistPendingNote() })
@@ -95,16 +137,20 @@ onBeforeUnmount(() => { void persistPendingNote() })
 
     <div class="grid min-h-0 flex-1 gap-4 xl:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.5fr)]">
       <section class="flex min-h-72 min-w-0 flex-col overflow-hidden rounded-2xl border border-surface-200 bg-white dark:border-surface-800 dark:bg-surface-900/60">
-        <div class="border-b border-surface-200 p-3 dark:border-surface-800">
+        <div class="space-y-3 border-b border-surface-200 p-3 dark:border-surface-800">
           <label class="relative block">
             <Icon name="lucide:search" size="15" class="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
             <input v-model="query" :placeholder="t('notesSearch')" class="w-full rounded-xl border border-surface-200 bg-surface-50 py-2.5 pl-9 pr-3 text-xs outline-none focus:border-primary-500 dark:border-surface-700 dark:bg-surface-800">
           </label>
+          <div class="grid grid-cols-2 gap-3">
+            <AppDropdown v-model="contentType" :options="contentTypeOptions" class="min-w-0" />
+            <AppDropdown v-model="extensionFilter" :options="extensionDropdownOptions" class="min-w-0" />
+          </div>
         </div>
 
         <div v-if="visibleFiles.length" class="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
           <button
-            v-for="file in visibleFiles"
+            v-for="file in pagedFiles"
             :key="file.id"
             type="button"
             class="w-full rounded-xl p-3 text-left transition-colors"
@@ -122,17 +168,25 @@ onBeforeUnmount(() => { void persistPendingNote() })
             </span>
           </button>
         </div>
+        <footer v-if="visibleFiles.length" class="flex items-center justify-between gap-2 border-t border-surface-100 px-3 py-2 text-[11px] text-surface-500 dark:border-surface-800">
+          <span>{{ firstVisible }}–{{ lastVisible }} / {{ visibleFiles.length }}</span>
+          <div class="flex items-center gap-2">
+            <button type="button" class="rounded-md px-2 py-1 hover:bg-surface-100 disabled:opacity-40 dark:hover:bg-surface-800" :disabled="currentPage <= 1" @click="currentPage--">{{ t('previousPage') }}</button>
+            <span>{{ currentPage }}/{{ pageCount }}</span>
+            <button type="button" class="rounded-md px-2 py-1 hover:bg-surface-100 disabled:opacity-40 dark:hover:bg-surface-800" :disabled="currentPage >= pageCount" @click="currentPage++">{{ t('nextPage') }}</button>
+          </div>
+        </footer>
         <div v-else class="flex flex-1 items-center justify-center p-6 text-center text-xs text-surface-500">
-          {{ files.length ? t('notesNoMatch') : t('notesEmpty') }}
+          {{ allUserFiles.length ? t('notesNoMatch') : t('notesEmpty') }}
         </div>
       </section>
 
       <section class="min-w-0 rounded-2xl border border-surface-200 bg-white p-4 dark:border-surface-800 dark:bg-surface-900/60 md:p-6">
-        <template v-if="activeFile">
+        <template v-if="selectedVisibleFile">
           <div class="mb-6 min-w-0 border-b border-surface-100 pb-4 dark:border-surface-800">
-            <p class="mb-1 text-[10px] font-bold uppercase tracking-wider text-primary-600">{{ activeFile.extension.toUpperCase() }}</p>
-            <h2 class="break-words text-lg font-semibold text-surface-900 dark:text-surface-100">{{ activeFile.name }}</h2>
-            <p class="mt-1 break-all font-mono text-xs text-surface-400">{{ activeFile.path }}</p>
+            <p class="mb-1 text-[10px] font-bold uppercase tracking-wider text-primary-600">{{ selectedVisibleFile.extension.toUpperCase() }}</p>
+            <h2 class="break-words text-lg font-semibold text-surface-900 dark:text-surface-100">{{ selectedVisibleFile.name }}</h2>
+            <p class="mt-1 break-all font-mono text-xs text-surface-400">{{ selectedVisibleFile.path }}</p>
           </div>
 
           <div class="mb-6">
@@ -149,7 +203,7 @@ onBeforeUnmount(() => { void persistPendingNote() })
               <button v-if="!tagInputOpen" type="button" class="rounded-lg border border-dashed border-surface-300 px-2.5 py-1 text-xs text-surface-500 hover:border-primary-500 hover:text-primary-600 dark:border-surface-700" @click="tagInputOpen = true">+ {{ t('addTag') }}</button>
             </div>
             <div class="flex flex-wrap items-center gap-2">
-              <span v-for="tag in activeFile.tags" :key="tag" class="inline-flex items-center gap-1 rounded-lg bg-primary-500/10 px-2.5 py-1.5 text-xs text-primary-700 dark:text-primary-300">
+              <span v-for="tag in selectedVisibleFile.tags" :key="tag" class="inline-flex items-center gap-1 rounded-lg bg-primary-500/10 px-2.5 py-1.5 text-xs text-primary-700 dark:text-primary-300">
                 #{{ tag }}
                 <button type="button" class="rounded p-0.5 text-primary-700/60 hover:text-rose-500 dark:text-primary-300/60" :aria-label="`${t('removeTag')}: ${tag}`" @click="deleteTag(tag)"><Icon name="lucide:x" size="12" /></button>
               </span>
@@ -158,7 +212,7 @@ onBeforeUnmount(() => { void persistPendingNote() })
                 <button type="submit" class="rounded-lg bg-primary-600 px-2.5 py-1.5 text-xs text-white">{{ t('saveTag') }}</button>
                 <button type="button" class="rounded-lg px-2 py-1.5 text-xs text-surface-500" @click="tagInputOpen = false; tagDraft = ''">{{ t('cancel') }}</button>
               </form>
-              <p v-if="!activeFile.tags.length && !tagInputOpen" class="text-xs text-surface-400">—</p>
+              <p v-if="!selectedVisibleFile.tags.length && !tagInputOpen" class="text-xs text-surface-400">—</p>
             </div>
           </div>
         </template>

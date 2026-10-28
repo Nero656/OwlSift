@@ -28,12 +28,15 @@ interface ElectronBridge {
   invoke(channel: 'files:remove-tag', data: { fileId: number; tag: string }): Promise<string[]>
   invoke(channel: 'files:set-note', data: { fileId: number; note: string }): Promise<void>
   invoke(channel: 'files:open', fileId: number): Promise<void>
+  invoke(channel: 'files:rename', data: { fileId: number; name: string }): Promise<{ path: string; name: string; extension: string; size: number; mtime: number }>
   invoke(channel: 'files:show-in-folder', fileId: number): Promise<void>
   invoke(channel: 'files:delete', data: { fileId: number }): Promise<void>
   invoke(channel: 'files:delete-from-disk', data: { fileId: number; mode: 'trash' | 'permanent' }): Promise<void>
   invoke(channel: 'files:get-image-preview', fileId: number): Promise<string | null>
   invoke(channel: 'files:folders'): Promise<Array<{ name: string; path: string; count: number }>>
   invoke(channel: 'files:search', query: string): Promise<IndexedFileRecord[]>
+  invoke(channel: 'files:list-scan-drives'): Promise<Array<{ path: string; label: string }>>
+  invoke(channel: 'files:scan-os-documents', data: { drivePath: string; extensions: string[] }): Promise<{ indexedCount: number; skippedCount: number }>
   invoke(channel: 'files:choose-and-index', data?: { maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>
   invoke(channel: 'files:choose-and-index-file', data?: { folderPath?: string }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>
   invoke(channel: 'files:edit-content', data: { fileId: number; content: string; bytes: number[]; expectedMtime: number }): Promise<void>;

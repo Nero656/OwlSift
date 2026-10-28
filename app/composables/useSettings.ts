@@ -4,6 +4,7 @@ import { defaultCustomization, normalizeCustomization, themeFonts, type ThemeCus
 
 export interface LocalModelConfig {
   enabled: boolean
+  provider: 'lmstudio' | 'ollama'
   endpoint: string
   model: string
   systemPrompt: string
@@ -30,6 +31,8 @@ export interface InterfaceSettings {
   pageSize: number
   showThumbnails: boolean
   showSystemFiles: boolean
+  aiResponseNotifications: boolean
+  aiResponseToastDuration: number
   localModel: LocalModelConfig
   globalModel: GlobalModelConfig
 }
@@ -44,6 +47,8 @@ export const defaults = (): InterfaceSettings => ({
   pageSize: 50,
   showThumbnails: true,
   showSystemFiles: false,
+  aiResponseNotifications: true,
+  aiResponseToastDuration: 5000,
   modelProvider: 'local',
   globalModel: {
     provider: 'openai',
@@ -55,6 +60,7 @@ export const defaults = (): InterfaceSettings => ({
   },
   localModel: {
     enabled: false,
+    provider: 'lmstudio',
     endpoint: 'http://127.0.0.1:1234/v1',
     model: '',
     systemPrompt: 'You are a helpful local assistant. Answer using the supplied file context when it is available.',
@@ -105,14 +111,15 @@ export const useSettings = () => {
         pageSize,
         showThumbnails: stored.showThumbnails !== false,
         showSystemFiles: stored.showSystemFiles === true,
+        aiResponseNotifications: stored.aiResponseNotifications !== false,
+        aiResponseToastDuration: [3000, 5000, 8000, 10000].includes(Number(stored.aiResponseToastDuration)) ? Number(stored.aiResponseToastDuration) : initial.aiResponseToastDuration,
         compactSidebar: Boolean(stored.compactSidebar),
         modelProvider: stored.modelProvider === 'global' ? 'global' : 'local',
         localModel: {
           ...initial.localModel,
           ...(stored.localModel ?? {}),
-          endpoint: stored.localModel?.endpoint === 'http://127.0.0.1:11434'
-            ? initial.localModel.endpoint
-            : stored.localModel?.endpoint ?? initial.localModel.endpoint,
+          provider: stored.localModel?.provider === 'ollama' ? 'ollama' : 'lmstudio',
+          endpoint: stored.localModel?.endpoint ?? initial.localModel.endpoint,
         },
         globalModel: {
           ...initial.globalModel,
@@ -138,6 +145,8 @@ export const useSettings = () => {
       fileView: initial.fileView,
       pageSize: initial.pageSize,
       showThumbnails: initial.showThumbnails,
+      aiResponseNotifications: initial.aiResponseNotifications,
+      aiResponseToastDuration: initial.aiResponseToastDuration,
     }
     hasLoaded.value = true
     save()

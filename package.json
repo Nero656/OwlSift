@@ -2,15 +2,17 @@
   "name": "owlsift",
   "private": true,
   "version": "1.0.0",
-  "packageManager": "pnpm@11.25.0",
-  "main": "electron-dist/main.js",
+  "packageManager": "npm@9.2.0",
+  "main": "electron-build/main.js",
   "scripts": {
     "dev": "nuxt dev",
     "generate": "nuxt generate && node scripts/prepare-static-assets.cjs",
     "prebuild:electron": "node scripts/ensure-release-database.cjs",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/prepare-electron-build.cjs",
-    "electron:dev": "npm run build:electron && electron dist/main.js --no-sandbox",
-    "electron:build": "npm run generate && npm run build:electron && electron-builder --publish never"
+    "electron:dev": "npm run build:electron && electron electron-build/main.js --no-sandbox",
+    "electron:build": "npm run generate && npm run build:electron && electron-builder --publish never",
+    "electron:build:quick": "node scripts/quick-electron-build.cjs",
+    "electron:build:zip": "node scripts/build-zip.cjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
@@ -40,7 +42,7 @@
     },
     "npmRebuild": false,
     "files": [
-      "electron-dist/**",
+      "electron-build/**",
       "package.json"
     ],
     "win": {
@@ -65,7 +67,7 @@
     },
     "extraResources": [
       {
-        "from": "build-resources/localmind.db",
+        "from": ".output/release-resources/localmind.db",
         "to": "database/localmind.db"
       },
       {

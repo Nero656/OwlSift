@@ -29,6 +29,7 @@ const randomSeed = ref(true)
 const targetFolder = ref('')
 const action = ref('standard')
 const acknowledged = ref(false)
+let autoStartConsumed = false
 const refining = ref(false)
 const actions = computed(() => [
   { value: 'standard', label: t('comfyStandard'), style: '' },
@@ -73,7 +74,8 @@ const generateFromChat = async (request: string, destination?: string, targetCha
   await run(request, refineFirst, destination, targetChatKey)
 }
 watch(() => props.autoStart, async enabled => {
-  if (!enabled || !props.initialPrompt.trim()) return
+  if (!enabled || autoStartConsumed || !props.initialPrompt.trim()) return
+  autoStartConsumed = true
   selectedWorkflow.value = settings.value.comfy.workflowMode
   await nextTick()
   try { await generateFromChat(props.initialPrompt, undefined, props.chatKey, props.refineInitialPrompt) }

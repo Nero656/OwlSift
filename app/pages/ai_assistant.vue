@@ -18,6 +18,7 @@ const fileCreationName = ref('untitled')
 const fileCreationExtension = ref('md')
 const fileCreationFolder = ref<string | null>(null)
 const fileCreationError = ref('')
+const fileCreationSubmitting = ref(false)
 const imageGenerationPrompt = ref('')
 const chatScroll = ref<HTMLElement | null>(null)
 const documentAttachments = ref<{ open: () => void; openComputerPicker: () => void } | null>(null)
@@ -101,7 +102,7 @@ const openFileCreation = () => {
 }
 
 const submitFileCreation = async () => {
-  if (isThinking.value || generatingImage.value) return
+  if (fileCreationSubmitting.value || isThinking.value || generatingImage.value) return
   const prompt = stripFileCreationCommand(fileCreationPrompt.value)
   const name = fileCreationName.value.trim().replace(new RegExp(`\\.${fileCreationExtension.value}$`, 'i'), '')
   const folderPath = fileCreationFolder.value
@@ -110,9 +111,11 @@ const submitFileCreation = async () => {
     return
   }
   const request: AiFileCreationRequest = { name, extension: fileCreationExtension.value, folderPath }
+  fileCreationSubmitting.value = true
   fileCreationModalOpen.value = false
   question.value = ''
-  await ask(prompt, attachedFiles.value, folderPath, editPermission(), () => outputFolder.value, request)
+  try { await ask(prompt, attachedFiles.value, folderPath, editPermission(), () => outputFolder.value, request) }
+  finally { fileCreationSubmitting.value = false }
 }
 
 
@@ -499,7 +502,7 @@ const connectModels = async () => {
             <p v-if="fileCreationError" class="text-xs text-rose-500" role="alert">{{ fileCreationError }}</p>
             <footer class="flex justify-end gap-2 border-t border-surface-200 pt-3 dark:border-surface-700">
               <button type="button" class="rounded-xl border border-surface-200 px-3.5 py-2 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300" @click="fileCreationModalOpen = false">{{ t('cancel') }}</button>
-              <button type="submit" class="rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="!fileCreationPrompt.trim() || !fileCreationName.trim() || !fileCreationFolder">{{ t('generateFile') }}</button>
+              <button type="submit" class="rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="fileCreationSubmitting || !fileCreationPrompt.trim() || !fileCreationName.trim() || !fileCreationFolder">{{ t('generateFile') }}</button>
             </footer>
           </form>
         </section>

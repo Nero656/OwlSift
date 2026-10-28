@@ -102,3 +102,18 @@ export async function storeDocumentBlob(path: string, blob?: Blob): Promise<Blob
     }
   })
 }
+
+export async function removeDocumentBlob(path: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('localmind-documents', 1)
+    request.onupgradeneeded = () => request.result.createObjectStore('blobs')
+    request.onerror = () => reject(request.error)
+    request.onsuccess = () => {
+      const db = request.result
+      const tx = db.transaction('blobs', 'readwrite')
+      tx.objectStore('blobs').delete(path)
+      tx.oncomplete = () => { db.close(); resolve() }
+      tx.onerror = () => { db.close(); reject(tx.error) }
+    }
+  })
+}

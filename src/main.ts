@@ -68,6 +68,10 @@ app.whenReady().then(() => {
     ipcMain.handle('app:open-ai-doc', (_event, id: string) => {
         const docs: Record<string, string> = {
             nuxtTheme: 'https://ui.nuxt.com/theme',
+            ollamaDocs: 'https://ollama.com/download',
+            ollamaModels: 'https://docs.ollama.com/api/tags',
+            ollamaApi: 'https://docs.ollama.com/api/openai-compatibility',
+            ollamaFaq: 'https://docs.ollama.com/faq',
             lmServer: 'https://lmstudio.ai/docs/developer/core/server/settings',
             lmCompat: 'https://lmstudio.ai/docs/developer/openai-compat',
             openaiStart: 'https://developers.openai.com/api/docs/quickstart',
@@ -100,6 +104,7 @@ app.whenReady().then(() => {
         const error = await shell.openPath(dbManager.getFilePath(fileId));
         if (error) throw new Error(error);
     });
+    ipcMain.handle('files:rename', (_event, data: { fileId: number; name: string }) => dbManager.renameIndexedFile(data.fileId, data.name));
     ipcMain.handle('files:show-in-folder', (_event, fileId: number) => {
         shell.showItemInFolder(dbManager.getFilePath(fileId));
     });
@@ -108,6 +113,9 @@ app.whenReady().then(() => {
     ipcMain.handle('files:get-image-preview', (_event, fileId: number) => dbManager.getImagePreview(fileId));
     ipcMain.handle('files:folders', () => dbManager.listFolders());
     ipcMain.handle('files:search', (_event, query: string) => dbManager.search(query));
+    ipcMain.handle('files:search-documents', (_event, query: string) => dbManager.search(query, 10000));
+    ipcMain.handle('files:list-scan-drives', () => dbManager.listScanDrives());
+    ipcMain.handle('files:scan-os-documents', (_event, data: { drivePath: string; extensions: string[] }) => dbManager.scanOsDocuments(data.drivePath, data.extensions));
     ipcMain.handle('files:choose-and-index', async (_event, data: { maxFiles?: number } = {}) => {
         const result = await dialog.showOpenDialog(win!, {
             properties: ['openDirectory']

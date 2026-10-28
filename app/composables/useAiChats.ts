@@ -2,7 +2,7 @@ import type { Ref } from 'vue'
 import type { ChatMessage } from '~/types/file'
 import { contextKey } from '~/utils/aiContext'
 
-interface ChatSession { paths: string[]; createdAt: number }
+interface ChatSession { paths: string[]; createdAt: number; title?: string }
 export interface AiChatListItem { key: string; title: string; preview: string; fileCount: number; updatedAt: number }
 const sessionStorageKey = 'owlsift-chat-sessions'
 const pathsFromKey = (key: string): string[] => {
@@ -20,6 +20,7 @@ export function useAiChats(attachedIds: Ref<number[]>) {
   const conversations = useState<Record<string, ChatMessage[]>>('ai-conversations', () => ({}))
   const sessions = useState<Record<string, ChatSession>>('ai-chat-sessions', () => ({}))
   const activeChatId = useState<string | null>('ai-active-chat', () => null)
+  const sortMode = useState<'recent' | 'oldest' | 'title'>('ai-chat-sort-mode', () => 'recent')
   const loaded = useState('ai-chat-sessions-loaded', () => false)
   let restoring = false
   if (import.meta.client && !loaded.value) {
@@ -29,11 +30,12 @@ export function useAiChats(attachedIds: Ref<number[]>) {
         for (const [key, value] of Object.entries(stored.sessions)) {
           const session = value as Partial<ChatSession> | null
           if ((key === 'general' || /^(chat|file|group):/.test(key)) && session && Array.isArray(session.paths) && session.paths.every(path => typeof path === 'string') && Number.isFinite(session.createdAt)) {
-            sessions.value[key] = { paths: session.paths, createdAt: session.createdAt! }
+            sessions.value[key] = { paths: session.paths, createdAt: session.createdAt!, ...(typeof session.title === 'string' ? { title: session.title } : {}) }
           }
         }
       }
-      if (typeof stored?.activeChatId === 'string' && Object.hasOwn(sessions.value, stored.activeChatId)) activeChatId.value = stored.activeChatId
+      if (!activeChatId.value && typeof stored?.activeChatId === 'string' && Object.hasOwn(sessions.value, stored.activeChatId)) activeChatId.value = stored.activeChatId
+      if (stored?.sortMode === 'recent' || stored?.sortMode === 'oldest' || stored?.sortMode === 'title') sortMode.value = stored.sortMode
     } catch { /* Existing message histories remain available if session metadata is invalid. */ }
     loaded.value = true
   }
@@ -49,6 +51,24 @@ export function useAiChats(attachedIds: Ref<number[]>) {
     activeChatId.value = key
     restoreAttachments(key)
   }
+  const renameChat = (key: string, title: string) => {
+    const trimmedTitle = title.trim().slice(0, 100)
+    if (!trimmedTitle || (!Object.hasOwn(sessions.value, key) && !Object.hasOwn(conversations.value, key))) return
+    sessions.value[key] = { ...getSession(key), title: trimmedTitle }
+  }
+  const deleteChat = (key: string) => {
+    delete sessions.value[key]
+    delete conversations.value[key]
+    if (activeChatId.value === key) {
+      const fallback = Object.keys(sessions.value)[0] ?? Object.keys(conversations.value)[0]
+      if (fallback) selectChat(fallback)
+      else {
+        sessions.value.general = { paths: [], createdAt: Date.now() }
+        activeChatId.value = 'general'
+        restoreAttachments('general')
+      }
+    }
+  }
   const newChat = () => {
     const id = 'chat:' + (globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36) + '-' + Math.random().toString(36).slice(2))
     sessions.value[id] = { paths: [], createdAt: Date.now() }
@@ -62,7 +82,7 @@ export function useAiChats(attachedIds: Ref<number[]>) {
   const incoming = files.value.filter(file => attachedIds.value.includes(file.id))
   if (incoming.length && (!activeChatId.value || !samePaths(getSession(activeChatId.value).paths, incoming.map(file => file.path)))) {
     activeChatId.value = contextKey(incoming)
-    sessions.value[activeChatId.value] = { paths: incoming.map(file => file.path), createdAt: Date.now() }
+    sessions.value[activeChatId.value] = { ...getSession(activeChatId.value), paths: incoming.map(file => file.path), createdAt: Date.now() }
   }
   if (!activeChatId.value) activeChatId.value = 'general'
   if (!Object.hasOwn(sessions.value, activeChatId.value)) sessions.value[activeChatId.value] = getSession(activeChatId.value)
@@ -74,9 +94,9 @@ export function useAiChats(attachedIds: Ref<number[]>) {
     sessions.value[activeChatId.value] = { ...current, paths: files.value.filter(file => attachedIds.value.includes(file.id)).map(file => file.path) }
   }, { flush: 'sync' })
   watch(files, () => { if (activeChatId.value) restoreAttachments(activeChatId.value) })
-  watch([sessions, activeChatId], () => {
+  watch([sessions, activeChatId, sortMode], () => {
     if (!import.meta.client || !loaded.value) return
-    try { localStorage.setItem(sessionStorageKey, JSON.stringify({ sessions: sessions.value, activeChatId: activeChatId.value })) } catch { /* Retain sessions in memory when storage is full. */ }
+    try { localStorage.setItem(sessionStorageKey, JSON.stringify({ sessions: sessions.value, activeChatId: activeChatId.value, sortMode: sortMode.value })) } catch { /* Retain sessions in memory when storage is full. */ }
   }, { deep: true, immediate: true })
 
   const chats = computed<AiChatListItem[]>(() => [...new Set([...Object.keys(conversations.value), ...Object.keys(sessions.value)])].map(key => {
@@ -86,10 +106,10 @@ export function useAiChats(attachedIds: Ref<number[]>) {
     const names = session.paths.map(path => path.replace(/\\/g, '/').split('/').pop()).filter(Boolean).join(', ')
     const preview = messages.at(-1)?.text.replace(/```[\s\S]*?```/g, '').replace(/\s+/g, ' ').trim().slice(0, 100) || names || t('emptyChat')
     return {
-      key, title: firstQuestion?.replace(/\s+/g, ' ').trim().slice(0, 70) || names || (key === 'general' ? t('generalChat') : t('newChat')),
+      key, title: session.title || firstQuestion?.replace(/\s+/g, ' ').trim().slice(0, 70) || names || (key === 'general' ? t('generalChat') : t('newChat')),
       preview, fileCount: session.paths.length,
       updatedAt: messages.at(-1)?.createdAt ?? session.createdAt,
     }
-  }).sort((a, b) => b.updatedAt - a.updatedAt || a.key.localeCompare(b.key)))
-  return { activeChatId, chats, newChat, selectChat }
+  }).sort((a, b) => sortMode.value === 'title' ? a.title.localeCompare(b.title) || b.updatedAt - a.updatedAt : sortMode.value === 'oldest' ? a.updatedAt - b.updatedAt || a.key.localeCompare(b.key) : b.updatedAt - a.updatedAt || a.key.localeCompare(b.key)))
+  return { activeChatId, chats, sortMode, newChat, selectChat, renameChat, deleteChat }
 }

@@ -19,12 +19,16 @@ export interface IElectronAPI {
     invoke(channel: 'files:remove-tag', data: { fileId: number; tag: string }): Promise<string[]>;
     invoke(channel: 'files:set-note', data: { fileId: number; note: string }): Promise<void>;
     invoke(channel: 'files:open', data: number): Promise<void>;
+    invoke(channel: 'files:rename', data: { fileId: number; name: string }): Promise<{ path: string; name: string; extension: string; size: number; mtime: number }>;
     invoke(channel: 'files:show-in-folder', data: number): Promise<void>;
     invoke(channel: 'files:delete', data: { fileId: number }): Promise<void>;
     invoke(channel: 'files:delete-from-disk', data: { fileId: number; mode: 'trash' | 'permanent' }): Promise<void>;
     invoke(channel: 'files:get-image-preview', data: number): Promise<string | null>;
     invoke(channel: 'files:folders', data?: unknown): Promise<Array<{ name: string; path: string; count: number }>>;
     invoke(channel: 'files:search', data: string): Promise<IndexedFileRecord[]>;
+    invoke(channel: 'files:search-documents', data: string): Promise<IndexedFileRecord[]>;
+    invoke(channel: 'files:list-scan-drives'): Promise<Array<{ path: string; label: string }>>;
+    invoke(channel: 'files:scan-os-documents', data: { drivePath: string; extensions: string[] }): Promise<{ indexedCount: number; skippedCount: number }>;
     invoke(channel: 'files:choose-and-index', data?: { maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
     invoke(channel: 'files:choose-and-index-file', data?: { folderPath?: string }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
     invoke(channel: 'files:edit-content', data: { fileId: number; content: string; bytes: number[]; expectedMtime: number }): Promise<void>;

@@ -7,9 +7,32 @@ import CreateFileDialog from './components/CreateFileDialog.vue'
 const { loadIndex, selectedFolder, searchQuery, searchIndexedFiles } = useFiles()
 const { settings } = useSettings()
 const { t } = useLanguage()
+const toast = useToast()
+const aiResponseReadyNotice = useState<{ id: string; key: string; paths: string[]; fileIds: number[]; response: string } | null>('ai-response-ready-notice', () => null)
+const activeChatId = useState<string | null>('ai-active-chat', () => null)
+const chatSessions = useState<Record<string, { paths: string[]; createdAt: number; title?: string }>>('ai-chat-sessions', () => ({}))
+const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
 const showFilePreview = useState('show-file-preview', () => false)
 const route = useRoute()
 const settingsTab = useState<string | number>('settings-active-tab', () => 'general')
+watch(aiResponseReadyNotice, notice => {
+  if (!notice || !settings.value.aiResponseNotifications) return
+  if (route.path === '/ai_assistant' && activeChatId.value === notice.key) return
+  const description = notice.response.replace(/```[\s\S]*?```/g, '').replace(/\s+/g, ' ').trim().slice(0, 140)
+  toast.add({
+    title: t('aiResponseReady'),
+    description: description || t('aiResponseReady'),
+    icon: 'lucide:message-circle',
+    color: 'primary',
+    duration: settings.value.aiResponseToastDuration,
+    onClick: () => {
+      chatSessions.value[notice.key] = { ...chatSessions.value[notice.key], paths: notice.paths, createdAt: chatSessions.value[notice.key]?.createdAt || Date.now() }
+      activeChatId.value = notice.key
+      attachedIds.value = notice.fileIds
+      void navigateTo('/ai_assistant')
+    },
+  })
+})
 watch([() => route.fullPath, selectedFolder, () => route.path === '/settings' ? settingsTab.value : null], () => { showFilePreview.value = false }, { flush: 'sync' })
 watch(() => settings.value.showSystemFiles, async () => {
   await loadIndex()
@@ -19,6 +42,7 @@ onMounted(() => { void loadIndex() })
 </script>
 
 <template>
+  <UApp :toaster="{ position: 'bottom-right' }">
   <div class="h-screen overflow-hidden bg-surface-50 text-surface-900 dark:bg-surface-950 dark:text-surface-100">
     <div class="flex h-full flex-col">
       <AppHeader />
@@ -49,6 +73,7 @@ onMounted(() => { void loadIndex() })
     </div>
     <CreateFileDialog />
   </div>
+  </UApp>
 </template>
 
 

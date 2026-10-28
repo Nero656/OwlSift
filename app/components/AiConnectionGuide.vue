@@ -1,5 +1,5 @@
 <script setup lang="ts">
-defineProps<{ provider: 'local' | 'global' }>()
+defineProps<{ provider: 'local' | 'global'; localProvider?: 'lmstudio' | 'ollama' }>()
 const { settings } = useSettings()
 const { language } = useLanguage()
 const error = ref('')
@@ -12,6 +12,10 @@ const remoteProviderName = computed(() => ({ openai: 'OpenAI', gemini: 'Gemini',
 const text = computed(() => language.value === 'ru' ? {
   title: 'Как подключить ИИ-модель',
   local: 'LM Studio на вашем компьютере',
+  ollama: 'Ollama на вашем компьютере',
+  ollamaSteps: ['Установите Ollama для Windows, macOS или Linux с официального сайта и запустите приложение/службу.', 'Скачайте модель в терминале, например: ollama pull llama3.2. Команда ollama list показывает установленные модели.', 'В настройках OwlSift выберите локальную модель → Ollama. Адрес по умолчанию — http://localhost:11434.', 'Нажмите «Подключиться к Ollama» и выберите модель из списка. Убедитесь, что модель уже скачана; затем отправьте вопрос в ИИ-ассистенте.'],
+  ollamaCors: 'Браузерное подключение требует, чтобы Ollama разрешала origin приложения. Укажите адрес приложения в OLLAMA_ORIGINS и перезапустите Ollama; для локальной разработки можно использовать http://localhost:3000. Не разрешайте посторонние origins в публичной сети.',
+  ollamaNetwork: 'Если OwlSift открыт в Docker/WSL или на другом устройстве, localhost указывает на это окружение, а не на Windows. В Ollama задайте OLLAMA_HOST=0.0.0.0:11434, разрешите порт 11434 в брандмауэре только для доверенной частной сети и используйте IP компьютера с Ollama. Для CORS также добавьте origin OwlSift в OLLAMA_ORIGINS.',
   localSteps: [
     'В LM Studio скачайте модель и откройте вкладку Developer. Загрузите модель и запустите сервер кнопкой Start Server.',
     'В приложении выберите «Локальная модель (LM Studio)» и включите локальную модель.',
@@ -19,6 +23,7 @@ const text = computed(() => language.value === 'ru' ? {
     'После подключения выберите модель из выпадающего списка и отправьте короткий вопрос в ИИ-ассистенте.',
   ],
   endpoint: 'Пример адреса API',
+  ollamaTroubleshoot: [['Connection refused', 'Проверьте, что Ollama запущена и отвечает на http://localhost:11434/api/tags. При необходимости перезапустите приложение Ollama.'], ['Model not found', 'Выполните ollama pull <имя-модели>, затем повторите подключение и выберите точное имя из списка.'], ['CORS / Failed to fetch', 'Добавьте origin OwlSift в OLLAMA_ORIGINS и перезапустите Ollama. Браузерный запрос не может обойти CORS.'], ['Docker / WSL', 'localhost внутри контейнера — это контейнер. Используйте доступный IP хоста и настройте OLLAMA_HOST, OLLAMA_ORIGINS и firewall.']],
   browser: 'Для прямого подключения из браузера включите Enable CORS в Server Settings LM Studio.',
   authentication: 'Если в LM Studio включено Require Authentication, используйте в приложении провайдер «Глобальная модель», адрес LM Studio и его API-токен: у локального режима пока нет поля токена.',
   networkTitle: 'LM Studio в Windows, приложение в Docker / WSL',
@@ -42,11 +47,15 @@ const text = computed(() => language.value === 'ru' ? {
     ['Empty response', 'Попробуйте другую модель или проверьте лимит генерации на сервере. PDF-сканы без текстового слоя требуют OCR.'],
   ],
   docs: 'Официальная документация',
-  links: { lmServer: 'LM Studio: настройки сервера и CORS', lmCompat: 'LM Studio: OpenAI-совместимый API', openaiStart: 'OpenAI: начало работы', openaiKeys: 'OpenAI: управление API-ключами', openaiErrors: 'OpenAI: коды ошибок', geminiApi: 'Gemini: OpenAI-совместимый API', deepseekApi: 'DeepSeek: API и модели' },
+  links: { ollamaDocs: 'Ollama: установка и загрузка моделей', ollamaModels: 'Ollama: API списка моделей', ollamaApi: 'Ollama: OpenAI-совместимый API', ollamaFaq: 'Ollama: настройка, CORS и сеть', lmServer: 'LM Studio: настройки сервера и CORS', lmCompat: 'LM Studio: OpenAI-совместимый API', openaiStart: 'OpenAI: начало работы', openaiKeys: 'OpenAI: управление API-ключами', openaiErrors: 'OpenAI: коды ошибок', geminiApi: 'Gemini: OpenAI-совместимый API', deepseekApi: 'DeepSeek: API и модели' },
   openError: 'Не удалось открыть системный браузер. Скопируйте адрес ссылки и откройте его вручную.',
 } : {
   title: 'How to connect an AI model',
   local: 'LM Studio on your computer',
+  ollama: 'Ollama on your computer',
+  ollamaSteps: ['Install Ollama for Windows, macOS, or Linux from the official site and start the app/service.', 'Download a model in a terminal, for example: ollama pull llama3.2. Run ollama list to see installed models.', 'In OwlSift Settings, select Local model → Ollama. The default address is http://localhost:11434.', 'Click Connect to Ollama and choose an installed model. Then send a question in the AI assistant.'],
+  ollamaCors: 'Browser connections require Ollama to allow the app origin. Add the OwlSift origin to OLLAMA_ORIGINS and restart Ollama. For local development, this may be http://localhost:3000. Avoid allowing untrusted origins on a public network.',
+  ollamaNetwork: 'When OwlSift runs in Docker/WSL or another device, localhost points to that environment, not Windows. Set OLLAMA_HOST=0.0.0.0:11434, allow port 11434 through the firewall only on a trusted private network, and use the Ollama computer IP. Also add the OwlSift origin to OLLAMA_ORIGINS.',
   localSteps: [
     'Download a model in LM Studio and open the Developer tab. Load the model and click Start Server.',
     'Select “Local model (LM Studio)” in this app and enable the local model.',
@@ -54,6 +63,7 @@ const text = computed(() => language.value === 'ru' ? {
     'Choose a model from the dropdown after connecting and send a short question in the AI assistant.',
   ],
   endpoint: 'Example API address',
+  ollamaTroubleshoot: [['Connection refused', 'Confirm Ollama is running and responds at http://localhost:11434/api/tags. Restart the Ollama app if needed.'], ['Model not found', 'Run ollama pull <model-name>, then reconnect and choose the exact model name from the list.'], ['CORS / Failed to fetch', 'Add the OwlSift origin to OLLAMA_ORIGINS and restart Ollama. Browser requests cannot bypass CORS.'], ['Docker / WSL', 'localhost inside a container refers to the container. Use a reachable host IP and configure OLLAMA_HOST, OLLAMA_ORIGINS, and the firewall.']],
   browser: 'For direct browser access, enable Enable CORS in LM Studio Server Settings.',
   authentication: 'If Require Authentication is enabled in LM Studio, use the Global model provider with the LM Studio address and API token. Local mode does not currently have a token field.',
   networkTitle: 'LM Studio on Windows, app in Docker / WSL',
@@ -77,10 +87,14 @@ const text = computed(() => language.value === 'ru' ? {
     ['Empty response', 'Try another model or check the server generation limit. Scanned PDFs without a text layer require OCR.'],
   ],
   docs: 'Official documentation',
-  links: { lmServer: 'LM Studio: server settings and CORS', lmCompat: 'LM Studio: OpenAI-compatible API', openaiStart: 'OpenAI: quickstart', openaiKeys: 'OpenAI: API key management', openaiErrors: 'OpenAI: error codes', geminiApi: 'Gemini: OpenAI-compatible API', deepseekApi: 'DeepSeek: API and models' },
+  links: { ollamaDocs: 'Ollama: download and install', ollamaModels: 'Ollama: list models API', ollamaApi: 'Ollama: OpenAI-compatible API', ollamaFaq: 'Ollama: configuration, CORS, and networking', lmServer: 'LM Studio: server settings and CORS', lmCompat: 'LM Studio: OpenAI-compatible API', openaiStart: 'OpenAI: quickstart', openaiKeys: 'OpenAI: API key management', openaiErrors: 'OpenAI: error codes', geminiApi: 'Gemini: OpenAI-compatible API', deepseekApi: 'DeepSeek: API and models' },
   openError: 'Could not open the system browser. Copy the link address and open it manually.',
 })
 const links = {
+  ollamaDocs: 'https://ollama.com/download',
+  ollamaModels: 'https://docs.ollama.com/api/tags',
+  ollamaApi: 'https://docs.ollama.com/api/openai-compatibility',
+  ollamaFaq: 'https://docs.ollama.com/faq',
   lmServer: 'https://lmstudio.ai/docs/developer/core/server/settings',
   lmCompat: 'https://lmstudio.ai/docs/developer/openai-compat',
   openaiStart: 'https://developers.openai.com/api/docs/quickstart',
@@ -100,7 +114,16 @@ const openDoc = async (event: MouseEvent, id: keyof typeof links) => {
 <template>
   <AppDisclosure :title="text.title" class="mt-5">
     <div class="space-y-5 text-surface-600 dark:text-surface-300">
-      <section v-if="provider === 'local'" class="space-y-3">
+      <section v-if="provider === 'local' && localProvider === 'ollama'" class="space-y-3">
+        <h3 class="font-semibold text-surface-900 dark:text-surface-100">{{ text.ollama }}</h3>
+        <ol class="list-decimal space-y-2 pl-5"><li v-for="step in text.ollamaSteps" :key="step">{{ step }}</li></ol>
+        <p class="text-xs">{{ text.endpoint }}</p>
+        <code class="block overflow-x-auto rounded-lg bg-white p-3 text-xs dark:bg-surface-900">http://localhost:11434</code>
+        <p>{{ text.ollamaCors }}</p><p>{{ text.ollamaNetwork }}</p>
+        <h4 class="font-semibold">{{ text.troubleshooting }}</h4>
+        <dl class="space-y-3"><div v-for="[code, hint] in text.ollamaTroubleshoot" :key="code"><dt class="font-mono text-xs font-semibold">{{ code }}</dt><dd class="mt-1 text-xs leading-relaxed">{{ hint }}</dd></div></dl>
+      </section>
+      <section v-else-if="provider === 'local'" class="space-y-3">
         <h3 class="font-semibold text-surface-900 dark:text-surface-100">{{ text.local }}</h3>
         <ol class="list-decimal space-y-2 pl-5"><li v-for="step in text.localSteps" :key="step">{{ step }}</li></ol>
         <p class="text-xs">{{ text.endpoint }}</p>

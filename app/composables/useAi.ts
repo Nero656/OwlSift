@@ -47,6 +47,7 @@ const normalizeLmStudioEndpoint = (endpoint: string) => {
   const normalized = normalizeEndpoint(endpoint) || 'http://127.0.0.1:1234/v1'
   return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`
 }
+const extractOllamaModels = (payload: { models?: Array<{ name?: string; model?: string }> }) => [...new Set((payload.models ?? []).map(item => item.name || item.model).filter((item): item is string => Boolean(item)))]
 
 const extractModels = (payload: OpenAIModelsResponse) => [...new Set([
   ...(payload.data ?? []).map(item => item.id),
@@ -187,6 +188,7 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
   const activeModelConfig = computed<ModelConfig>(() => settings.value.modelProvider === 'global' ? settings.value.globalModel : settings.value.localModel)
   const isModelEnabled = computed(() => settings.value.modelProvider === 'global' || settings.value.localModel.enabled)
   const modelReady = computed(() => connectionStatus.value === 'ok' && isModelEnabled.value && Boolean(activeModelConfig.value.model.trim() && activeModelConfig.value.endpoint.trim()))
+  const responseReadyNotice = useState<{ id: string; key: string; paths: string[]; fileIds: number[]; response: string } | null>('ai-response-ready-notice', () => null)
 
   const formatError = (error: unknown) => {
     let message = error instanceof Error ? error.message : String(error)
@@ -205,7 +207,7 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
     return `${t('modelRequestError')} ${message}`
   }
 
-  watch(() => [settings.value.modelProvider, settings.value.globalModel.provider, activeModelConfig.value.endpoint, ('apiKey' in activeModelConfig.value ? activeModelConfig.value.apiKey : '')], () => {
+  watch(() => [settings.value.modelProvider, settings.value.localModel.provider, settings.value.globalModel.provider, activeModelConfig.value.endpoint, ('apiKey' in activeModelConfig.value ? activeModelConfig.value.apiKey : '')], () => {
     availableModels.value = []
     connectionStatus.value = 'idle'
     lastError.value = ''
@@ -219,11 +221,17 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       let payload: OpenAIModelsResponse
       if (settings.value.modelProvider === 'local') {
         try {
-          const response = await fetch(`${normalizeLmStudioEndpoint(config.endpoint)}/models`)
-          if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`)
-          payload = await response.json() as OpenAIModelsResponse
+          if (config.provider === 'ollama') {
+            const response = await fetch(`${normalizeEndpoint(config.endpoint) || 'http://127.0.0.1:11434'}/api/tags`)
+            if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`)
+            payload = await response.json() as OpenAIModelsResponse
+          } else {
+            const response = await fetch(`${normalizeLmStudioEndpoint(config.endpoint)}/models`)
+            if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`)
+            payload = await response.json() as OpenAIModelsResponse
+          }
         } catch {
-          payload = await $fetch<OpenAIModelsResponse>('/api/ai/status', { query: { endpoint: config.endpoint } })
+          payload = await $fetch<OpenAIModelsResponse>('/api/ai/status', { query: { endpoint: config.endpoint, provider: config.provider } })
         }
       } else {
         const global = config as GlobalModelConfig
@@ -235,7 +243,9 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
         payload = await response.json() as OpenAIModelsResponse
       }
 
-      availableModels.value = extractModels(payload)
+      availableModels.value = settings.value.modelProvider === 'local' && settings.value.localModel.provider === 'ollama'
+        ? extractOllamaModels(payload as { models?: Array<{ name?: string; model?: string }> })
+        : extractModels(payload)
       connectionStatus.value = 'ok'
       config.model = availableModels.value.includes(config.model) ? config.model : availableModels.value[0] ?? ''
       return availableModels.value
@@ -428,6 +438,13 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       }
       // Mutate the reactive stored message so saved chats and the visible list update.
       Object.assign(savedMessage, message)
+      responseReadyNotice.value = {
+        id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+        key,
+        paths: selected.map(file => file.path),
+        fileIds: selected.map(file => file.id),
+        response: savedMessage.text,
+      }
     } catch (error) {
       if (!isAbortError(error)) {
         const invalidArtifact = error instanceof Error && /invalid document|too many document|duplicate document|file creation is not permitted/i.test(error.message)

@@ -6,14 +6,15 @@ const { t } = useLanguage()
 const dialog = ref<HTMLDialogElement | null>(null)
 const openError = ref('')
 const donationUrl = 'https://www.donationalerts.com/r/nero_656'
+const boostyUrl = 'https://boosty.to/nero_656/donate'
 const openDialog = () => {
   openError.value = ''
   dialog.value?.showModal()
 }
-const openDonation = async (event: MouseEvent) => {
+const openPayment = async (event: MouseEvent, url: string) => {
   if (!window.electron) return
   event.preventDefault()
-  try { await window.electron.invoke('app:open-donation') }
+  try { await window.electron.invoke('app:open-external', url) }
   catch { openError.value = t('donationOpenError') }
 }
 </script>
@@ -37,11 +38,16 @@ const openDonation = async (event: MouseEvent) => {
         </div>
         <p class="mt-3 text-sm text-surface-500">{{ t('supportDescription') }}</p>
         <img :src="qrCode" :alt="t('supportDeveloper') + ' — DonationAlerts QR'" width="240" height="240" class="mx-auto my-5 h-60 w-60 max-w-full rounded-xl bg-white">
-        <a :href="donationUrl" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-xl bg-primary-600 px-4 py-3 text-sm font-medium text-white hover:bg-primary-700" @click="openDonation">
-          <Icon name="lucide:external-link" size="16" />{{ t('openDonation') }}
-        </a>
+        <div class="grid gap-2">
+          <a :href="donationUrl" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-xl bg-primary-600 px-4 py-3 text-sm font-medium text-white hover:bg-primary-700" @click="openPayment($event, donationUrl)">
+            <Icon name="lucide:external-link" size="16" />{{ t('donationAlertsOption') }}
+          </a>
+          <a :href="boostyUrl" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-xl border border-surface-300 px-4 py-3 text-sm font-medium text-surface-800 hover:bg-surface-100 dark:border-surface-700 dark:text-surface-100 dark:hover:bg-surface-800" @click="openPayment($event, boostyUrl)">
+            <Icon name="lucide:heart-handshake" size="16" />{{ t('boostyOption') }}
+          </a>
+        </div>
         <p v-if="openError" role="alert" class="mt-2 text-xs text-rose-500">{{ openError }}</p>
-        <p class="mt-3 break-all text-center text-xs text-surface-500">{{ donationUrl }}</p>
+        <div class="mt-3 space-y-1 break-all text-center text-xs text-surface-500"><p>DonationAlerts: {{ donationUrl }}</p><p>Boosty: {{ boostyUrl }}</p></div>
       </dialog>
     </Teleport>
   </div>

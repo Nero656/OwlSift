@@ -1,7 +1,7 @@
-import { isHiddenPath } from '../../src/utils/fileVisibility'
+import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibility'
 import { imageFileExtensions, scriptFileExtensions } from '../utils/fileTypeGroups'
 import type { IndexedFolder, LocalFile } from '../types/file'
-import { createDocumentBlob, extractDocumentText, storeDocumentBlob } from '../utils/documents'
+import { createDocumentBlob, extractDocumentText, removeDocumentBlob, storeDocumentBlob } from '../utils/documents'
 import { creatableFileTypes, defaultFileTemplate } from './useFileTypes'
 import { useLanguage } from './useLanguage'
 
@@ -68,6 +68,7 @@ export const useFiles = () => {
   const { language } = useLanguage()
   const { settings } = useSettings()
   const excludedBySettings = (path: string) => !settings.value.showSystemFiles && isHiddenPath(path)
+  const excludedFromUserLists = (path: string) => excludedBySettings(path) || isAuxiliaryFilePath(path)
   const excludedBrowserFiles = useState<LocalFile[]>('excluded-browser-files', () => [])
   const excludedBrowserFolders = useState<IndexedFolder[]>('excluded-browser-folders', () => [])
   const browserVisibilityMode = useState<boolean | null>('browser-system-file-visibility', () => null)
@@ -192,7 +193,7 @@ export const useFiles = () => {
     if (activeFile.value) activeFile.value = files.value.find(file => file.path === activeFile.value?.path) ?? null
   }
 
-  const addFolder = async () => {
+  const addFolder = async (options: { extensions?: string[] } = {}) => {
     if (isDesktop()) {
       await syncSystemFilesPreference()
       const result = await window.electron.invoke('files:choose-and-index', { maxFiles: maxFilesPerFolder.value })
@@ -219,6 +220,8 @@ export const useFiles = () => {
               await visit(entry as FileSystemDirectoryHandle, `${prefix}/${name}`)
               continue
             }
+            const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() ?? '' : ''
+            if (options.extensions?.length && !options.extensions.includes(extension)) { skippedCount++; continue }
             const source = await (entry as FileSystemFileHandle).getFile()
             await addBrowserFile(source, prefix)
             indexedCount += 1
@@ -534,6 +537,35 @@ export const useFiles = () => {
     if (isDesktop()) await window.electron.invoke('files:show-in-folder', fileId)
   }
 
+  const renameIndexedFile = async (fileId: number, requestedName: string) => {
+    const current = files.value.find(file => file.id === fileId)
+    if (!current) throw new Error('File is no longer available')
+    const entered = requestedName.trim()
+    if (!entered || entered.length > 180 || /[\\/:*?"<>|\x00-\x1f]/.test(entered)) throw new Error('Invalid file name')
+    const suffix = current.extension ? '.' + current.extension : ''
+    const nextName = /\.[^.]+$/.test(entered) ? entered : entered + suffix
+    if (current.extension && nextName.split('.').pop()?.toLowerCase() !== current.extension.toLowerCase()) throw new Error('Changing the file extension is not supported')
+    const nextPath = current.path.slice(0, current.path.length - current.name.length) + nextName
+    if (files.value.some(file => file.id !== fileId && file.path.toLowerCase() === nextPath.toLowerCase())) throw new Error('A file with that name already exists')
+    if (isDesktop()) {
+      await window.electron.invoke('files:rename', { fileId, name: entered })
+      await loadIndex()
+      const updated = files.value.find(file => file.id === fileId)
+      if (updated) activeFile.value = updated
+      if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
+      return updated
+    }
+    const blob = await storeDocumentBlob(current.path)
+    if (blob) { await storeDocumentBlob(nextPath, blob); await removeDocumentBlob(current.path) }
+    const mtimeValue = Date.now()
+    const update = (file: LocalFile): LocalFile => file.id === fileId ? { ...file, name: nextName, path: nextPath, mtimeValue, mtime: formatDate(mtimeValue) } : file
+    files.value = files.value.map(update)
+    if (searchResults.value) searchResults.value = searchResults.value.map(update)
+    if (activeFile.value?.id === fileId) activeFile.value = update(activeFile.value)
+    saveBrowserState()
+    return files.value.find(file => file.id === fileId)
+  }
+
   const deleteIndexedFile = async (fileId: number) => {
     if (isDesktop()) await window.electron.invoke('files:delete', { fileId })
     files.value = files.value.filter(file => file.id !== fileId)
@@ -574,13 +606,24 @@ export const useFiles = () => {
       const records = await window.electron.invoke('files:search', query)
       results = records.map(record => toLocalFile(record, language.value))
     }
-    return results.filter(file => !excludedBySettings(file.path))
+    return results.filter(file => !excludedFromUserLists(file.path))
+  }
+
+  const searchOsDocuments = async (query: string): Promise<LocalFile[]> => {
+    if (!isDesktop()) return searchAllIndexedFiles(query)
+    const records = query.trim()
+      ? await window.electron.invoke('files:search-documents', query)
+      : await window.electron.invoke('files:list')
+    const mapped = records.map(record => toLocalFile(record, language.value))
+    const ids = new Set(mapped.map(file => file.id))
+    files.value = [...files.value.filter(file => !ids.has(file.id)), ...mapped]
+    return mapped.filter(file => !excludedFromUserLists(file.path))
   }
 
   const filteredFiles = computed(() => {
     const source = searchQuery.value.trim() && searchResults.value !== null ? searchResults.value : files.value
     return source.filter(file => {
-      if (excludedBySettings(file.path)) return false
+      if (excludedFromUserLists(file.path)) return false
       const extension = file.extension.toLowerCase()
       const matchesType = !selectedType.value
         || (selectedType.value === '__scripts__' ? scriptFileExtensions.has(extension)
@@ -597,7 +640,7 @@ export const useFiles = () => {
       return 0
     })
   })
-  const allTags = computed(() => [...new Set(files.value.flatMap(file => file.tags))].sort((a, b) => a.localeCompare(b)))
+  const allTags = computed(() => [...new Set(files.value.filter(file => !excludedFromUserLists(file.path)).flatMap(file => file.tags))].sort((a, b) => a.localeCompare(b)))
   const selectFile = (file: LocalFile) => { activeFile.value = file; showFilePreview.value = true }
   const getFileTypeCount = (extension: string) => files.value.filter(file => file.extension === extension).length
   const openCreateFileDialog = (folderPath?: string | null) => {
@@ -608,7 +651,7 @@ export const useFiles = () => {
   return {
     importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
     selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
-    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles, searchAllIndexedFiles,
+    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles, searchAllIndexedFiles, searchOsDocuments,
     fileDialogFolder, isCreateFileOpen, openCreateFileDialog,
   }
 }

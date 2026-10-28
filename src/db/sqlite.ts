@@ -1,4 +1,5 @@
 import { createFileVisibilityFilter } from '../utils/hiddenFiles';
+import { isHiddenPath } from '../utils/fileVisibility';
 import Database from 'better-sqlite3';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -37,6 +38,17 @@ export interface DatabaseStatus {
 }
 
 export const MAX_FILES_PER_FOLDER = 1000;
+const OS_DOCUMENT_EXTENSIONS = new Set([
+    'pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'md', 'markdown', 'log',
+    'csv', 'tsv', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp', 'html', 'htm',
+    'json', 'xml', 'yaml', 'yml',
+]);
+const OS_SCAN_IGNORED_DIRECTORIES = new Set([
+    'windows', '$recycle.bin', 'system volume information', 'program files',
+    'program files (x86)', 'programdata', 'perflogs', 'recovery',
+    'proc', 'sys', 'dev', 'run', 'snap', 'node_modules', '.git',
+]);
+const OS_SCAN_IGNORED_UNIX_ROOTS = new Set(['usr', 'etc', 'var', 'lib', 'lib64', 'bin', 'sbin', 'boot', 'system', 'applications', 'private']);
 
 class DatabaseManager {
     private db: Database.Database | null = null;
@@ -52,6 +64,12 @@ class DatabaseManager {
     public isFileVisible(filePath: string): boolean {
         if (this.includeSystemFiles) return true;
         try { return !this.visibility.isHidden(filePath); } catch { return false; }
+    }
+
+    /** Fast metadata-only filter for SQLite result queries; never starts PowerShell on the UI thread. */
+    private isFileVisibleForQuery(filePath: string): boolean {
+        if (this.includeSystemFiles) return true;
+        try { return !isHiddenPath(filePath); } catch { return false; }
     }
 
     /**
@@ -70,9 +88,10 @@ class DatabaseManager {
         }
 
         this.db = new Database(dbPath);
-        this.db.function('owlsift_file_visible', (filePath: string) => this.isFileVisible(filePath) ? 1 : 0);
+        this.db.function('owlsift_file_visible', (filePath: string) => this.isFileVisibleForQuery(filePath) ? 1 : 0);
         this.dbPath = dbPath;
         this.db.pragma('foreign_keys = ON');
+        this.db.pragma('busy_timeout = 1500');
 
         // Включаем WAL-режим для ускорения записи и читаемости из разных потоков
         this.db.pragma('journal_mode = WAL');
@@ -158,6 +177,81 @@ class DatabaseManager {
             ON CONFLICT(path) DO UPDATE SET name = excluded.name, indexed_count = excluded.indexed_count
         `).run(folderPath, path.basename(folderPath), indexedCount);
         return { folderPath, indexedCount, skippedCount, limit };
+    }
+
+    public listScanDrives(): Array<{ path: string; label: string }> {
+        if (process.platform === 'win32') {
+            const drives: Array<{ path: string; label: string }> = [];
+            for (let code = 65; code <= 90; code++) {
+                const drivePath = String.fromCharCode(code) + ':' + String.fromCharCode(92);
+                try { if (fs.statSync(drivePath).isDirectory()) drives.push({ path: drivePath, label: drivePath.slice(0, 2) }); } catch { /* unavailable drive */ }
+            }
+            return drives;
+        }
+        if (process.platform === 'darwin') {
+            const volumesPath = '/Volumes';
+            try {
+                return fs.readdirSync(volumesPath, { withFileTypes: true }).filter(entry => entry.isDirectory())
+                    .map(entry => ({ path: path.join(volumesPath, entry.name), label: entry.name }));
+            } catch { /* use the system root below */ }
+        }
+        const root = path.parse(process.env.HOME || path.sep).root || path.sep;
+        return [{ path: root, label: root }];
+    }
+
+    /** Scan only the explicitly selected drive and document extensions. */
+    public async scanOsDocuments(drivePath: string, requestedExtensions: string[]): Promise<{ indexedCount: number; skippedCount: number }> {
+        if (!this.db) throw new Error('SQLite is not initialized');
+        const selectedDrive = this.listScanDrives().find(drive => path.resolve(drive.path).toLowerCase() === path.resolve(String(drivePath || '')).toLowerCase());
+        if (!selectedDrive) throw new Error('Choose an available drive before scanning');
+        const extensions = new Set((Array.isArray(requestedExtensions) ? requestedExtensions : [])
+            .map(extension => String(extension).trim().replace(/^\./, '').toLowerCase())
+            .filter(extension => OS_DOCUMENT_EXTENSIONS.has(extension)));
+        if (!extensions.size) throw new Error('Select at least one document extension before scanning');
+
+        let indexedCount = 0;
+        let skippedCount = 0;
+        let visited = 0;
+        const visibility = createFileVisibilityFilter();
+        const visit = async (directory: string): Promise<void> => {
+            let entries: fs.Dirent[];
+            try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); } catch { return; }
+            for (const entry of entries) {
+                visited++;
+                if (visited % 256 === 0) await new Promise<void>(resolve => setImmediate(resolve));
+                const entryPath = path.join(directory, entry.name);
+                if (entry.isSymbolicLink()) continue;
+                if (entry.isDirectory()) {
+                    if (OS_SCAN_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) continue;
+                    if (process.platform !== 'win32' && path.dirname(directory) === path.parse(directory).root &&
+                        OS_SCAN_IGNORED_UNIX_ROOTS.has(entry.name.toLowerCase())) continue;
+                    try { if (!this.includeSystemFiles && visibility.isHidden(entryPath)) continue; } catch { continue; }
+                    await visit(entryPath);
+                    continue;
+                }
+                if (!entry.isFile()) continue;
+                const extension = path.extname(entry.name).toLowerCase().slice(1);
+                if (!extensions.has(extension)) continue;
+                try {
+                    if (!this.includeSystemFiles && visibility.isHidden(entryPath)) { skippedCount++; continue; }
+                    const stat = await fs.promises.stat(entryPath);
+                    if (!stat.isFile()) continue;
+                    const existing = this.db!.prepare('SELECT size, mtime FROM files WHERE path = ? AND is_deleted = 0').get(entryPath) as { size: number; mtime: number } | undefined;
+                    const mtime = Math.floor(stat.mtimeMs);
+                    if (!existing || existing.size !== stat.size || existing.mtime !== mtime) {
+                        let content = '';
+                        if (this.readTextExtensions().has('.' + extension) && stat.size <= 2 * 1024 * 1024) {
+                            content = await fs.promises.readFile(entryPath, 'utf8');
+                        }
+                        this.saveFile({ path: entryPath, name: entry.name, extension, size: stat.size, mtime, content });
+                        indexedCount++;
+                    }
+                } catch { skippedCount++; }
+            }
+        };
+
+        try { await visit(selectedDrive.path); } catch { skippedCount++; }
+        return { indexedCount, skippedCount };
     }
 
     private readTextExtensions() {
@@ -272,6 +366,32 @@ class DatabaseManager {
         const file = this.db.prepare('SELECT path FROM files WHERE id = ?').get(fileId) as { path: string } | undefined;
         if (!file) throw new Error('Indexed file not found');
         return file.path;
+    }
+
+    public renameIndexedFile(fileId: number, requestedName: string): { path: string; name: string; extension: string; size: number; mtime: number } {
+        if (!this.db || !Number.isInteger(fileId)) throw new Error('Invalid file id');
+        const name = requestedName.trim();
+        if (!name || name.length > 180 || name === '.' || name === '..' || /[\\/:*?"<>|\x00-\x1f]/.test(name)) throw new Error('Invalid file name');
+        const file = this.db.prepare('SELECT path, name, extension FROM files WHERE id = ? AND is_deleted = 0').get(fileId) as { path: string; name: string; extension: string } | undefined;
+        if (!file) throw new Error('Indexed file not found');
+        const oldExtension = path.extname(file.name);
+        const hasExtension = path.extname(name) !== '';
+        const nextName = hasExtension ? name : name + oldExtension;
+        if (path.extname(nextName).toLowerCase() !== oldExtension.toLowerCase()) throw new Error('Changing the file extension is not supported');
+        const nextPath = path.join(path.dirname(file.path), nextName);
+        if (nextPath === file.path) return { path: file.path, name: file.name, extension: file.extension, size: fs.statSync(file.path).size, mtime: fs.statSync(file.path).mtimeMs };
+        if (fs.existsSync(nextPath)) throw new Error('A file with that name already exists');
+        const stats = fs.statSync(file.path);
+        if (!stats.isFile()) throw new Error('Selected path is not a file');
+        fs.renameSync(file.path, nextPath);
+        try {
+            const nextStats = fs.statSync(nextPath);
+            this.db.prepare('UPDATE files SET path = ?, name = ?, size = ?, mtime = ? WHERE id = ?').run(nextPath, nextName, nextStats.size, nextStats.mtimeMs, fileId);
+            return { path: nextPath, name: nextName, extension: file.extension, size: nextStats.size, mtime: nextStats.mtimeMs };
+        } catch (error) {
+            try { fs.renameSync(nextPath, file.path); } catch { /* Keep the indexed path aligned whenever the filesystem allows rollback. */ }
+            throw error;
+        }
     }
 
     public removeFileRecord(fileId: number): void {
@@ -441,6 +561,10 @@ class DatabaseManager {
             this.db.exec('ALTER TABLE files ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0');
         }
 
+        // Rebuild the external-content FTS index only when it is first created.
+        // Rebuilding it at every launch synchronously blocked Electron on large indexes.
+        const hasFtsIndex = Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'files_fts'").get());
+
         // FTS5 виртуальная таблица для полнотекстового поиска по содержимому
         // tokenize='unicode61' обеспечивает корректную работу с кириллицей и регистрами
         this.db.exec(`
@@ -452,6 +576,7 @@ class DatabaseManager {
         tokenize='unicode61'
       );
     `);
+        if (!hasFtsIndex) this.db.exec("INSERT INTO files_fts(files_fts) VALUES('rebuild')");
 
         // Триггеры для автоматической синхронизации FTS5 индекса с основной таблицей
         this.db.exec(`
@@ -468,7 +593,6 @@ class DatabaseManager {
         INSERT INTO files_fts(files_fts, rowid, name, content) VALUES('delete', old.id, old.name, old.content);
         INSERT INTO files_fts(rowid, name, content) VALUES (new.id, new.name, new.content);
       END;
-      INSERT INTO files_fts(files_fts) VALUES('rebuild');
     `);
     }
 

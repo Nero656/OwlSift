@@ -4,7 +4,55 @@ import type { LocalFile } from '~/types/file'
 const props = defineProps<{ file: LocalFile; active?: boolean; layout?: 'list' | 'grid'; selectable?: boolean; selected?: boolean; hideSummary?: boolean }>()
 const { t } = useLanguage()
 const { settings } = useSettings()
+const { openIndexedFile, selectFile, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk } = useFiles()
 const emit = defineEmits<{ select: [file: LocalFile]; summary: [file: LocalFile]; toggle: [file: LocalFile] }>()
+const renameDialogOpen = ref(false)
+const renameValue = ref('')
+const renameBusy = ref(false)
+const contextItems = computed(() => [
+  { label: t('openFile'), icon: 'lucide:external-link', onSelect: () => void openIndexedFile(props.file.id).catch(showFileActionError) },
+  { label: t('previewFile'), icon: 'lucide:eye', onSelect: () => selectFile(props.file) },
+  { label: t('copyPath'), icon: 'lucide:copy', onSelect: () => void copyFilePath() },
+  { type: 'separator' as const },
+  { label: t('renameFile'), icon: 'lucide:pencil', onSelect: () => void renameFile() },
+  { label: t('deleteFile'), icon: 'lucide:trash-2', color: 'error' as const, onSelect: () => void deleteFile() },
+])
+
+function showFileActionError(error: unknown) {
+  if (import.meta.client) window.alert(error instanceof Error ? error.message : String(error))
+}
+
+async function copyFilePath() {
+  try { await navigator.clipboard.writeText(props.file.path) }
+  catch { showFileActionError(new Error(t('copyPathFailed'))) }
+}
+
+function renameFile() {
+  const extension = props.file.extension ? '.' + props.file.extension : ''
+  const currentBaseName = extension && props.file.name.toLowerCase().endsWith(extension.toLowerCase()) ? props.file.name.slice(0, -extension.length) : props.file.name
+  renameValue.value = currentBaseName
+  renameDialogOpen.value = true
+}
+
+async function saveRename() {
+  const requestedName = renameValue.value.trim()
+  if (!requestedName || renameBusy.value) return
+  renameBusy.value = true
+  try {
+    await renameIndexedFile(props.file.id, requestedName)
+    renameDialogOpen.value = false
+  } catch (error) { showFileActionError(error) }
+  finally { renameBusy.value = false }
+}
+
+async function deleteFile() {
+  const confirmMessage = t(import.meta.client && window.electron ? 'deleteFileConfirm' : 'deleteBrowserFileConfirm').replace('{name}', props.file.name)
+  if (!window.confirm(confirmMessage)) return
+  try {
+    if (import.meta.client && window.electron) await deleteFileFromDisk(props.file.id, 'trash')
+    else await deleteIndexedFile(props.file.id)
+  } catch (error) { showFileActionError(error) }
+}
 
 const activate = () => {
   if (props.selectable) emit('toggle', props.file)
@@ -71,6 +119,7 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
 </script>
 
 <template>
+  <UContextMenu :items="contextItems" :aria-label="t('contextMenu')">
   <article ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-primary-500 bg-primary-500/10 shadow-sm ring-1 ring-inset ring-primary-500/40' : 'border-surface-200/80 bg-white hover:border-surface-300 hover:shadow-sm dark:border-surface-800 dark:bg-surface-800/50 dark:hover:border-surface-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
     <div class="file-card-body" :class="layout === 'grid' ? 'flex h-full min-w-0 flex-col gap-3' : 'flex min-w-0 flex-wrap items-start gap-3'">
       <div class="file-card-main" :class="layout === 'grid' ? 'flex min-w-0 flex-1 flex-col gap-3' : 'flex min-w-0 flex-[1_1_14rem] items-start gap-3'">
@@ -101,6 +150,20 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
       </div>
     </div>
   </article>
+  </UContextMenu>
+  <Teleport to="body">
+    <div v-if="renameDialogOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" @click.self="renameDialogOpen = false" @keydown.esc="renameDialogOpen = false">
+      <section class="w-full max-w-md rounded-xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900" role="dialog" aria-modal="true" :aria-label="t('renameFile')">
+        <h2 class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ t('renameFile') }}</h2>
+        <label class="mt-4 block text-sm text-surface-600 dark:text-surface-300" :for="`file-rename-${file.id}`">{{ t('renameFilePrompt') }}</label>
+        <input :id="`file-rename-${file.id}`" v-model="renameValue" autofocus class="mt-2 w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-100" maxlength="180" @keydown.enter.prevent="saveRename" @keydown.esc="renameDialogOpen = false">
+        <div class="mt-5 flex justify-end gap-2">
+          <UButton color="neutral" variant="outline" :disabled="renameBusy" @click="renameDialogOpen = false">{{ t('cancel') }}</UButton>
+          <UButton color="primary" :loading="renameBusy" :disabled="!renameValue.trim()" @click="saveRename">{{ t('save') }}</UButton>
+        </div>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <style scoped>

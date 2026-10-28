@@ -13,7 +13,7 @@ const {
 const route = useRoute()
 const { settings } = useSettings()
 const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
-const { activeChatId, chats, newChat, selectChat } = useAiChats(attachedIds)
+const { activeChatId, chats, sortMode, newChat, selectChat, renameChat, deleteChat: removeChat } = useAiChats(attachedIds)
 const chatSidebarVisible = useState('ai-chat-sidebar-visible', () => true)
 const previousCompact = useState<boolean | null>('ai-sidebar-previous-compact', () => null)
 watch(() => route.path === '/ai_assistant', (inAssistant, wasInAssistant) => {
@@ -26,6 +26,10 @@ watch(() => route.path === '/ai_assistant', (inAssistant, wasInAssistant) => {
   }
 }, { immediate: true })
 const { t } = useLanguage()
+const setChatSort = (mode: 'recent' | 'oldest' | 'title') => { sortMode.value = mode }
+const deleteChat = (key: string) => {
+  if (import.meta.client && window.confirm(t('deleteChatConfirm'))) removeChat(key)
+}
 const isCompact = computed({
   get: () => settings.value.compactSidebar,
   set: value => { settings.value.compactSidebar = value },
@@ -88,7 +92,6 @@ const navItems = computed(() => [
       :class="isCompact ? 'w-16' : 'w-64'"
   >
     <div :class="isCompact ? 'space-y-4 p-2' : 'space-y-6 p-3'">
-
       <!-- Navigation -->
 
       <nav class="space-y-1">
@@ -156,7 +159,7 @@ const navItems = computed(() => [
   </aside>
   <Transition name="chat-sidebar">
     <aside v-if="route.path === '/ai_assistant' && chatSidebarVisible" class="chat-sidebar-panel flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-surface-200 bg-surface-50/80 dark:border-surface-800 dark:bg-surface-950/40">
-      <AiChatSwitcher :chats="chats" :active-key="activeChatId" @select="selectChat" @new="newChat" />
+      <AiChatSwitcher :chats="chats" :active-key="activeChatId" :sort-mode="sortMode" @select="selectChat" @new="newChat" @rename="renameChat" @delete="deleteChat" @sort="setChatSort" />
     </aside>
   </Transition>
   </div>

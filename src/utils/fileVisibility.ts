@@ -5,6 +5,12 @@ const serviceNames = new Set([
   'bootmgr', 'bootnxt', 'bootstat.dat', 'node_modules', '__pycache__', 'lost+found',
 ])
 const serviceSuffix = /(?:\.(?:tmp|temp|swp|swo|swn|orig|rej|part|crdownload|download|dmp|cache|lock|lck|bak|backup|owlsift-backup|pyc|pyo|o|obj|class|dll|sys|exe|msi|com|scr|lnk|db|sqlite|sqlite3|dylib)|\.so(?:\.\d+)*|(?:\.db|\.sqlite|\.sqlite3)-(?:wal|shm|journal)|~)$/i
+const auxiliarySuffix = /\.(?:rtf|log|trace|stackdump|old|temp|swp|swo|bak|backup|tmp|cache|lock)$/i
+
+/** Files intended for diagnostics, recovery or system tooling rather than normal user browsing. */
+export function isAuxiliaryFilePath(value: string): boolean {
+  return value.replace(/\\/g, '/').split('/').filter(Boolean).some(name => auxiliarySuffix.test(name))
+}
 
 /** Hidden names, alternate data streams, system metadata, caches and binary service files. */
 export function isHiddenPath(value: string): boolean {

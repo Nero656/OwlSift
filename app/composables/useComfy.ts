@@ -127,9 +127,25 @@ export function useComfy() {
     try {
       const target = conversations.value[params.chatKey] ?? (conversations.value[params.chatKey] = [])
       const originalPrompt = typeof params.originalPrompt === 'string' ? params.originalPrompt.trim() : ''
-      target.push({ sender: 'user', text: originalPrompt || params.prompt, createdAt: Date.now() })
-      target.push({ sender: 'ai', provider: 'comfy', text: t('comfySubmitting'), createdAt: Date.now(), createdFiles: [] })
-      message = target[target.length - 1]!
+      const submittedText = originalPrompt || params.prompt
+      const previousReply = target.at(-1)
+      const previousRequest = target.at(-2)
+      const retryingFailedGeneration = previousReply?.sender === 'ai'
+        && previousReply.provider === 'comfy'
+        && !previousReply.createdFiles?.length
+        && previousReply.text.includes(t('comfyExecutionFailed'))
+        && previousRequest?.sender === 'user'
+        && previousRequest.text.trim() === submittedText
+      if (retryingFailedGeneration) {
+        message = previousReply
+        message.text = t('comfySubmitting')
+        message.createdFiles = []
+        delete message.mediaGeneration
+      } else {
+        target.push({ sender: 'user', text: submittedText, createdAt: Date.now() })
+        target.push({ sender: 'ai', provider: 'comfy', text: t('comfySubmitting'), createdAt: Date.now(), createdFiles: [] })
+        message = target[target.length - 1]!
+      }
       if (!config.enabled || !connected.value) throw new Error(t('comfyConnectFirst'))
       if (!params.prompt.trim() || params.prompt.length > 20000) throw new Error(t('comfyPromptRequired'))
       if (!folders.value.some(folder => folder.path === params.folderPath)) throw new Error(t('outputFolderUnavailable'))
