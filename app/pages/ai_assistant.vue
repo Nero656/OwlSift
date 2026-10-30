@@ -98,7 +98,7 @@ const openFileCreation = () => {
   if (!folders.value.length) createVirtualFolder('Workspace')
   fileCreationFolder.value = outputFolder.value && folders.value.some(folder => folder.path === outputFolder.value)
     ? outputFolder.value
-    : folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? folders.value[0]?.path ?? null
+    : folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? folders.value[0]?.path ?? null
   fileCreationModalOpen.value = true
 }
 

@@ -6,6 +6,8 @@
   "main": "electron-build/main.js",
   "scripts": {
     "dev": "nuxt dev",
+    "test:workspace": "tsc -p tsconfig.electron.json && node --test tests/workspace-files.test.cjs",
+    "test:scan": "tsc -p tsconfig.electron.json && node --test tests/document-scan.test.cjs",
     "generate": "nuxt generate && node scripts/prepare-static-assets.cjs",
     "prebuild:electron": "node scripts/ensure-release-database.cjs",
     "build:electron": "tsc -p tsconfig.electron.json && node scripts/prepare-electron-build.cjs",

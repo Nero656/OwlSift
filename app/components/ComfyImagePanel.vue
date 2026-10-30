@@ -39,10 +39,10 @@ const actions = computed(() => [
 ])
 watch([folders, selectedFolder], () => {
   if (folders.value.some(folder => folder.path === targetFolder.value)) return
-  targetFolder.value = folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? folders.value[0]?.path ?? ''
+  targetFolder.value = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? folders.value[0]?.path ?? ''
 }, { immediate: true })
 watch(selectedFolder, name => {
-  const folder = folders.value.find(folder => folder.name === name)
+  const folder = folders.value.find(folder => (folder.path === name || folder.name === name))
   if (folder) targetFolder.value = folder.path
 })
 watch(() => settings.value.comfy, () => { acknowledged.value = false }, { deep: true })
@@ -107,8 +107,8 @@ defineExpose({ generateFromChat, stopGeneration: stop })
         </div>
         <p v-if="!folders.length" class="text-xs text-amber-600">{{ t('comfyProjectRequired') }}</p>
         <p v-if="settings.comfy.workflowMode === 'custom'" class="text-[11px] text-surface-500">{{ t('comfyCustomSizeHint') }}</p>
-        <div class="flex flex-wrap items-center gap-3 text-xs"><label class="flex items-center gap-2"><input v-model="randomSeed" type="checkbox">{{ t('comfyRandomSeed') }}</label><label class="flex items-center gap-2">{{ t('comfySeed') }}<input v-model.number="seed" type="number" min="0" step="1" :disabled="randomSeed" class="w-36 rounded-lg border border-surface-200 bg-white px-2 py-1.5 dark:border-surface-700 dark:bg-surface-900"></label></div>
-        <label v-if="assessment.execution !== 'local'" class="flex items-start gap-2 text-xs leading-relaxed text-amber-700 dark:text-amber-400"><input v-model="acknowledged" type="checkbox" :disabled="settings.comfy.localOnly" class="mt-0.5 shrink-0">{{ t('comfyExternalConsent') }}</label>
+        <div class="flex flex-wrap items-center gap-3 text-xs"><UCheckbox v-model="randomSeed" :label="t('comfyRandomSeed')" :aria-label="t('comfyRandomSeed')" size="sm" /><label class="flex items-center gap-2">{{ t('comfySeed') }}<input v-model.number="seed" type="number" min="0" step="1" :disabled="randomSeed" class="w-36 rounded-lg border border-surface-200 bg-white px-2 py-1.5 dark:border-surface-700 dark:bg-surface-900"></label></div>
+        <UCheckbox v-if="assessment.execution !== 'local'" v-model="acknowledged" :disabled="settings.comfy.localOnly" :label="t('comfyExternalConsent')" :aria-label="t('comfyExternalConsent')" size="sm" :ui="{ label: 'text-amber-700 dark:text-amber-400 leading-relaxed' }" />
         <div class="flex flex-wrap gap-2"><UButton icon="i-lucide-image-plus" :loading="busy" :disabled="!canGenerate" @click="run()">{{ t('comfyGenerate') }}</UButton><UButton v-if="busy" color="neutral" variant="outline" @click="stop">{{ t('comfyStop') }}</UButton></div>
         <div v-if="job" class="space-y-1 rounded-lg border border-surface-200 p-3 text-xs dark:border-surface-700" aria-live="polite"><p>{{ job.status }}</p><p class="break-all text-[11px] opacity-60">{{ t('comfyJob') }}: {{ job.id }} · {{ job.folderPath }}</p><progress v-if="busy && job.progress !== null" :value="job.progress" max="100" class="w-full" /></div>
         <p v-if="error" role="alert" class="break-words text-xs text-rose-500">{{ error }}</p>

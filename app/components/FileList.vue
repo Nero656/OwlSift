@@ -4,6 +4,8 @@ import { imageFileExtensions, scriptFileExtensions } from '~/utils/fileTypeGroup
 import { isHiddenPath } from '../../src/utils/fileVisibility'
 import type { LocalFile } from '~/types/file'
 const { t } = useLanguage()
+const desktop = ref(false)
+onMounted(() => { desktop.value = Boolean(window.electron) })
 
 const {
   files,
@@ -21,8 +23,9 @@ const {
   allTags,
   openCreateFileDialog,
   addOneFile,
+  openFileTransfer,
 } = useFiles()
-const dropFolderPath = computed(() => folders.value.find(folder => folder.name === selectedFolder.value)?.path)
+const dropFolderPath = computed(() => folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path)
 const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
 const toggleDocument = (file: { id: number }) => { selectedIds.value = selectedIds.value.includes(file.id) ? selectedIds.value.filter(id => id !== file.id) : [...selectedIds.value, file.id] }
 const previewSelectedDocument = (file: LocalFile) => {
@@ -48,8 +51,9 @@ watch(controlsCollapsed, value => { if (import.meta.client) localStorage.setItem
 const folderScopedFiles = computed(() => files.value.filter(file => {
   if (!settings.value.showSystemFiles && isHiddenPath(file.path)) return false
   if (!selectedFolder.value) return true
-  const folderPath = folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? selectedFolder.value
-  return file.path === folderPath || file.path.startsWith(`${folderPath}/`)
+  const folderPath = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? selectedFolder.value
+  const normalize = (value: string) => value.split(String.fromCharCode(92)).join('/').replace(/[/]$/, '')
+  return normalize(file.path) === normalize(folderPath) || normalize(file.path).startsWith(normalize(folderPath) + '/')
 }))
 const typeCounts = computed(() => {
   const counts = new Map<string, number>()
@@ -100,6 +104,8 @@ const openSummary = async (file: LocalFile) => {
       <span class="text-xs text-surface-500">{{ t('selectedDocuments') }} {{ selectedDocuments.length }}</span>
       <button type="button" class="rounded-lg border border-surface-200 px-3 py-2 dark:border-surface-700" :disabled="!pagedFiles.length" @click="selectPage">{{ t('selectPage') }}</button>
       <button type="button" class="rounded-lg px-3 py-2 text-surface-500 disabled:opacity-40" :disabled="!selectedIds.length" @click="clearSelection">{{ t('clearSelection') }}</button>
+      <UButton v-if="desktop" color="neutral" variant="outline" size="sm" :disabled="!selectedDocuments.length" @click="openFileTransfer(selectedDocuments.map(file => file.id),'copy')">{{ t('workspaceCopy') }}</UButton>
+      <UButton v-if="desktop" color="neutral" variant="outline" size="sm" :disabled="!selectedDocuments.length" @click="openFileTransfer(selectedDocuments.map(file => file.id),'move')">{{ t('workspaceMove') }}</UButton>
       <button type="button" class="ml-auto rounded-lg bg-primary-600 px-3 py-2 text-white disabled:opacity-40" :disabled="!selectedDocuments.length" @click="analyzeSelection">{{ t('analyzeSelection') }}</button>
       <button type="button" class="flex h-8 w-8 items-center justify-center rounded-full text-surface-500 transition hover:bg-surface-100 hover:text-primary-600 dark:hover:bg-surface-800" :aria-label="t('collapseFileControls')" :title="t('collapseFileControls')" aria-expanded="true" @click="controlsCollapsed = true">
         <Icon name="lucide:chevron-up" size="16" />

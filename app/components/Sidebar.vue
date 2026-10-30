@@ -131,7 +131,7 @@ const navItems = computed(() => [
               :path="folder.path"
               :name="folder.name"
               :count="folder.count"
-              :active="selectedFolder === folder.name"
+              :active="selectedFolder === folder.path || selectedFolder === folder.name"
               @select="selectedFolder = $event"
           />
         </div>

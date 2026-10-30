@@ -4,18 +4,29 @@ import type { LocalFile } from '~/types/file'
 const props = defineProps<{ file: LocalFile; active?: boolean; layout?: 'list' | 'grid'; selectable?: boolean; selected?: boolean; hideSummary?: boolean }>()
 const { t } = useLanguage()
 const { settings } = useSettings()
-const { openIndexedFile, selectFile, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk } = useFiles()
+const { openIndexedFile, selectFile, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, openFileTransfer, selectedFileIds, folders } = useFiles()
 const emit = defineEmits<{ select: [file: LocalFile]; summary: [file: LocalFile]; toggle: [file: LocalFile] }>()
+const desktop = ref(false)
+const transferIds = () => props.selected && selectedFileIds.value.includes(props.file.id) ? [...selectedFileIds.value] : [props.file.id]
+const startDrag = (event: DragEvent) => {
+  if (!desktop.value || !event.dataTransfer) return
+  event.dataTransfer.effectAllowed = 'copyMove'
+  event.dataTransfer.setData('application/x-owlsift-files',JSON.stringify(transferIds()))
+}
 const renameDialogOpen = ref(false)
 const renameValue = ref('')
 const renameBusy = ref(false)
 const contextItems = computed(() => [
   { label: t('openFile'), icon: 'lucide:external-link', onSelect: () => void openIndexedFile(props.file.id).catch(showFileActionError) },
-  { label: t('previewFile'), icon: 'lucide:eye', onSelect: () => selectFile(props.file) },
+  { label: t('previewFile'), icon: 'lucide:eye', onSelect: (): void => { selectFile(props.file) } },
   { label: t('copyPath'), icon: 'lucide:copy', onSelect: () => void copyFilePath() },
   { type: 'separator' as const },
+  ...(desktop.value ? [
+    { label: t('workspaceCopyTo'), icon: 'lucide:copy', disabled: !folders.value.length, onSelect: () => openFileTransfer(transferIds(),'copy') },
+    { label: t('workspaceMoveTo'), icon: 'lucide:folder-input', disabled: !folders.value.length, onSelect: () => openFileTransfer(transferIds(),'move') },
+  ] : []),
   { label: t('renameFile'), icon: 'lucide:pencil', onSelect: () => void renameFile() },
-  { label: t('deleteFile'), icon: 'lucide:trash-2', color: 'error' as const, onSelect: () => void deleteFile() },
+  { label: t('deleteFile'), icon: 'lucide:trash-2', color: 'error' as const, onSelect: (): void => { void deleteFile() } },
 ])
 
 function showFileActionError(error: unknown) {
@@ -90,6 +101,7 @@ const loadThumbnail = async () => {
 watch(() => [props.file.id, props.file.thumbnail, settings.value.showThumbnails], () => { if (cardIsNearViewport) void loadThumbnail() })
 
 onMounted(() => {
+  desktop.value = Boolean(window.electron)
   if (!cardElement.value) return
   if (typeof IntersectionObserver === 'undefined') { cardIsNearViewport = true; void loadThumbnail(); return }
   thumbnailObserver = new IntersectionObserver(entries => {
@@ -120,7 +132,7 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
 
 <template>
   <UContextMenu :items="contextItems" :aria-label="t('contextMenu')">
-  <article ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-primary-500 bg-primary-500/10 shadow-sm ring-1 ring-inset ring-primary-500/40' : 'border-surface-200/80 bg-white hover:border-surface-300 hover:shadow-sm dark:border-surface-800 dark:bg-surface-800/50 dark:hover:border-surface-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
+  <article :draggable="desktop" @dragstart="startDrag" ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-primary-500 bg-primary-500/10 shadow-sm ring-1 ring-inset ring-primary-500/40' : 'border-surface-200/80 bg-white hover:border-surface-300 hover:shadow-sm dark:border-surface-800 dark:bg-surface-800/50 dark:hover:border-surface-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
     <div class="file-card-body" :class="layout === 'grid' ? 'flex h-full min-w-0 flex-col gap-3' : 'flex min-w-0 flex-wrap items-start gap-3'">
       <div class="file-card-main" :class="layout === 'grid' ? 'flex min-w-0 flex-1 flex-col gap-3' : 'flex min-w-0 flex-[1_1_14rem] items-start gap-3'">
         <div v-if="thumbnail && settings.showThumbnails" class="h-10 w-10 shrink-0 overflow-hidden rounded-full border border-surface-200 bg-surface-100 ring-2 ring-white dark:border-surface-700 dark:bg-surface-900 dark:ring-surface-800">
@@ -146,6 +158,9 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
       </div>
 
       <div class="file-card-meta" :class="layout === 'grid' ? 'flex w-full shrink-0 items-center justify-between border-t border-surface-100 pt-2 text-[11px] text-surface-400 dark:border-surface-700' : 'flex shrink-0 flex-col items-end justify-between self-stretch text-right text-[11px] text-surface-400'">
+        <UDropdownMenu :items="contextItems" :content="{side:'bottom',align:'end',collisionPadding:12}" :modal="false">
+          <UButton icon="i-lucide-ellipsis" color="neutral" variant="ghost" size="xs" :aria-label="`${t('workspaceFileActions')}: ${file.name}`" @click.stop @pointerdown.stop />
+        </UDropdownMenu>
         <div :class="layout === 'grid' ? 'flex flex-col items-start' : ''"><div>{{ file.size }}</div><div>{{ file.mtime }}</div></div>
       </div>
     </div>

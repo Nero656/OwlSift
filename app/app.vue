@@ -72,6 +72,7 @@ onMounted(() => { void loadIndex() })
       </div>
     </div>
     <CreateFileDialog />
+    <FileTransferDialog />
   </div>
   </UApp>
 </template>

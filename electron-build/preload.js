@@ -30,12 +30,19 @@ const allowedInvokeChannels = [
     'files:search-documents',
     'files:list-scan-drives',
     'files:scan-os-documents',
+    'files:stop-document-scan',
+    'files:document-scan-status',
+    'files:choose-scan-folders',
     'files:choose-and-index',
     'files:choose-and-index-file',
     'files:create-in-folder',
     'files:edit-content',
     'files:get-content',
     'files:get-bytes',
+    'folders:default-location',
+    'folders:choose-parent',
+    'folders:create',
+    'files:transfer-workspace',
     'folders:remove-from-index'
 ];
 const allowedOnChannels = [

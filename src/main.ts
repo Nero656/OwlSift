@@ -1,3 +1,5 @@
+import type { WorkspaceTransferRequest } from './types/workspace';
+import type { DocumentScanRequest } from './types/documentScan';
 import { requestComfy, type ComfyRequest } from './services/comfyTransport';
 import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net } from 'electron';
 import path from 'path';
@@ -116,7 +118,15 @@ app.whenReady().then(() => {
     ipcMain.handle('files:search', (_event, query: string) => dbManager.search(query));
     ipcMain.handle('files:search-documents', (_event, query: string) => dbManager.search(query, 10000));
     ipcMain.handle('files:list-scan-drives', () => dbManager.listScanDrives());
-    ipcMain.handle('files:scan-os-documents', (_event, data: { drivePath: string; extensions: string[] }) => dbManager.scanOsDocuments(data.drivePath, data.extensions));
+    ipcMain.handle('files:scan-os-documents', (_event, data: DocumentScanRequest) => dbManager.scanOsDocuments(data.drivePath, data.extensions, data.folderPaths, data.resume));
+    ipcMain.handle('files:document-scan-status', () => dbManager.documentScanStatus());
+    ipcMain.handle('files:stop-document-scan', () => dbManager.stopDocumentScan());
+    ipcMain.handle('files:choose-scan-folders', async (_event, data: { drivePath: string }) => {
+        const [root] = await dbManager.documentScanRoots(data.drivePath);
+        const result = await dialog.showOpenDialog(win!, { defaultPath: root, properties: ['openDirectory', 'multiSelections'] });
+        if (result.canceled || !result.filePaths.length) return null;
+        return dbManager.documentScanRoots(data.drivePath, result.filePaths);
+    });
     ipcMain.handle('files:choose-and-index', async (_event, data: { maxFiles?: number } = {}) => {
         const result = await dialog.showOpenDialog(win!, {
             properties: ['openDirectory']
@@ -124,33 +134,30 @@ app.whenReady().then(() => {
         if (result.canceled || !result.filePaths[0]) return null;
         return dbManager.indexFolder(result.filePaths[0], data.maxFiles);
     });
-    ipcMain.handle('files:import-drop', (_event, data: { filePath: string; folderPath?: string; maxFiles: number }) => {
-        if (!path.isAbsolute(data.filePath) || !fs.statSync(data.filePath).isFile()) throw new Error('Invalid file');
-        if (!dbManager.isFileVisible(data.filePath)) throw new Error('System and hidden files are excluded by the current settings');
-        let target = data.filePath;
-        if (data.folderPath) {
-            const folder = dbManager.listFolders().find(folder => folder.path === data.folderPath);
-            if (!folder || !fs.statSync(folder.path).isDirectory()) throw new Error('Folder not found');
-            const limit = Math.max(1, Math.min(5000, Number(data.maxFiles) || 1000));
-            if (folder.count >= limit) throw new Error('Folder limit reached');
-            target = path.join(folder.path, path.basename(data.filePath));
-            if (path.resolve(target) !== path.resolve(data.filePath)) {
-                const ext = path.extname(target), base = path.basename(target, ext);
-                let suffix = 1;
-                while (fs.existsSync(target)) target = path.join(folder.path, base + ' (' + suffix++ + ')' + ext);
-                fs.copyFileSync(data.filePath, target, fs.constants.COPYFILE_EXCL);
-            }
-        }
-        dbManager.indexSingleFile(target, data.folderPath);
-        return target;
+    ipcMain.handle('folders:default-location', () => app.getPath('desktop'));
+    ipcMain.handle('folders:choose-parent', async () => {
+        const result = await dialog.showOpenDialog(win!, {properties:['openDirectory'],defaultPath:app.getPath('desktop')});
+        return result.canceled ? null : result.filePaths[0] ?? null;
     });
-    ipcMain.handle('files:choose-and-index-file', async (_event, data: { folderPath?: string } = {}) => {
-        const result = await dialog.showOpenDialog(win!, {
-            properties: ['openFile'],
-            defaultPath: data.folderPath,
-        });
-        if (result.canceled || !result.filePaths[0]) return null;
-        return dbManager.indexSingleFile(result.filePaths[0], data.folderPath);
+    ipcMain.handle('folders:create', (_event, data: {parentPath:string;name:string}) => dbManager.createWorkspaceFolder(data.parentPath,data.name));
+    ipcMain.handle('files:transfer-workspace', (_event, data: WorkspaceTransferRequest) => dbManager.transferWorkspaceFiles(data));
+    ipcMain.handle('files:import-drop', async (_event, data: {filePath:string;folderPath?:string;maxFiles:number}) => {
+        if (!path.isAbsolute(data.filePath)) throw new Error('Invalid file');
+        if (data.folderPath) return dbManager.importFileToWorkspace(data.filePath,data.folderPath,data.maxFiles);
+        dbManager.indexSingleFile(data.filePath); return data.filePath;
+    });
+    ipcMain.handle('files:choose-and-index-file', async (_event, data: {folderPath?:string;maxFiles?:number} = {}) => {
+        const result = await dialog.showOpenDialog(win!, {properties:['openFile','multiSelections'],defaultPath:data.folderPath});
+        if (result.canceled || !result.filePaths.length) return null;
+        let indexedCount = 0, skippedCount = 0;
+        for (const source of result.filePaths) {
+            try {
+                if (data.folderPath) await dbManager.importFileToWorkspace(source,data.folderPath,data.maxFiles);
+                else dbManager.indexSingleFile(source);
+                indexedCount++;
+            } catch { skippedCount++; }
+        }
+        return {folderPath:data.folderPath ?? path.dirname(result.filePaths[0]!),indexedCount,skippedCount,limit:data.maxFiles ?? 1000};
     });
     ipcMain.handle('files:create-in-folder', (_event, data: { folderPath: string; fileName: string; content: string; bytes?: number[] }) => {
         return dbManager.createFileInFolder(data.folderPath, data.fileName, data.content ?? '', data.bytes ? Buffer.from(data.bytes) : undefined);

@@ -27,7 +27,7 @@ const emit = defineEmits<{
         ? 'bg-surface-200/70 font-medium text-surface-900 dark:bg-surface-800 dark:text-surface-100'
         : 'text-surface-500 hover:bg-surface-100 dark:text-surface-400 dark:hover:bg-surface-800/40'
     "
-      @click="emit('select', props.name)"
+      @click="emit('select', props.path)"
   >
     <div class="flex min-w-0 items-center gap-2.5">
       <Icon

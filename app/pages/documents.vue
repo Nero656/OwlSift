@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { DocumentScanStatus } from '../../src/types/documentScan'
 import FileCard from '~/components/FileCard.vue'
 import type { LocalFile } from '~/types/file'
 import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibility'
@@ -23,12 +24,51 @@ const results = ref<LocalFile[]>([])
 const drives = ref<Array<{ path: string; label: string }>>([])
 const drivePath = ref('')
 const isDesktop = ref(false)
-const isScanning = ref(false)
+const isScanning = useState('documents-scanning', () => false)
+const isStopping = useState('documents-scan-stopping', () => false)
+const scanScope = ref<'drive' | 'folders'>('drive')
+const scanFolders = ref<string[]>([])
+let browserScan: AbortController | undefined
+const resumableScan = ref<DocumentScanStatus | null>(null)
+const scanProgress = ref<DocumentScanStatus | null>(null)
+let progressTimer: ReturnType<typeof setInterval> | undefined
+let statusVersion = 0, refreshingProgress = false
+let lastProgress = ''
+const refreshScanStatus = async (reload = false) => {
+  if (!isDesktop.value) return
+  const version = ++statusVersion
+  try {
+    const status = await window.electron.invoke('files:document-scan-status')
+    if (!status || version !== statusVersion) return
+    resumableScan.value = status.resumable ? status : null
+    scanProgress.value = status.running ? status : null
+    const signature = `${status.indexedCount}:${status.contentCount}`
+    if (reload && signature !== lastProgress) { lastProgress = signature; await loadIndex() }
+  } catch (cause) { console.error('Could not load scan progress:', cause) }
+}
+const stopProgressPolling = () => {
+  if (progressTimer) clearInterval(progressTimer)
+  progressTimer = undefined
+}
+const startProgressPolling = () => {
+  stopProgressPolling()
+  progressTimer = setInterval(async () => {
+    if (refreshingProgress) return
+    refreshingProgress = true
+    try { await refreshScanStatus(true) } finally { refreshingProgress = false }
+  }, 2000)
+}
+watch(drivePath, () => { scanFolders.value = [] })
 const notice = ref('')
 const error = ref('')
 const currentPage = ref(1)
 const extensions = ['pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp', 'html', 'htm', 'json', 'xml', 'yaml', 'yml']
 const selectedExtensions = ref([...extensions])
+const toggleScanExtension = (extension: string, checked: boolean) => {
+  selectedExtensions.value = checked
+    ? [...new Set([...selectedExtensions.value, extension])]
+    : selectedExtensions.value.filter(value => value !== extension)
+}
 const groups: Record<string, string[]> = {
   word: ['pdf', 'doc', 'docx', 'odt', 'rtf'],
   text: ['txt', 'md', 'markdown', 'log', 'html', 'htm', 'json', 'xml', 'yaml', 'yml'],
@@ -77,29 +117,77 @@ watch([query, documentType], () => { currentPage.value = 1 })
 watch(pageCount, count => { currentPage.value = Math.min(currentPage.value, count) })
 watch(() => settings.value.showSystemFiles, () => { if (query.value.trim()) void search() })
 
-const scan = async () => {
-  if (isScanning.value || !selectedExtensions.value.length || (isDesktop.value && !drivePath.value)) return
+const chooseScanFolders = async () => {
+  if (isScanning.value || !drivePath.value) return
+  error.value = ''
+  try {
+    const selected = await window.electron.invoke('files:choose-scan-folders', { drivePath: drivePath.value })
+    if (selected) scanFolders.value = [...new Set([...scanFolders.value, ...selected])]
+  } catch (cause) {
+    console.error('Could not choose scan folders:', cause)
+    error.value = t('scanFolderChooseError')
+  }
+}
+const stopScan = async () => {
+  if (!isScanning.value || isStopping.value) return
+  isStopping.value = true
+  browserScan?.abort()
+  if (isDesktop.value) {
+    try { await window.electron.invoke('files:stop-document-scan') }
+    catch (cause) {
+      console.error('Could not stop document scan:', cause)
+      error.value = t('scanStopError')
+      isStopping.value = false
+    }
+  }
+}
+const scan = async (resume = false) => {
+  if (resume && resumableScan.value) {
+    const saved = resumableScan.value
+    drivePath.value = saved.drivePath
+    await nextTick()
+    selectedExtensions.value = [...saved.extensions]
+    scanScope.value = saved.folderPaths ? 'folders' : 'drive'
+    scanFolders.value = [...(saved.folderPaths ?? [])]
+  }
+  if (isScanning.value || !selectedExtensions.value.length || (isDesktop.value && (!drivePath.value || (scanScope.value === 'folders' && !scanFolders.value.length)))) return
   isScanning.value = true
+  isStopping.value = false
+  browserScan = new AbortController()
   error.value = ''
   notice.value = ''
   try {
     let result
     if (isDesktop.value) {
       await window.electron.invoke('files:set-system-visibility', settings.value.showSystemFiles)
-      result = await window.electron.invoke('files:scan-os-documents', { drivePath: drivePath.value, extensions: [...selectedExtensions.value] })
+      if (isStopping.value) { notice.value = t('scanStopped'); return }
+      startProgressPolling()
+      result = await window.electron.invoke('files:scan-os-documents', {
+        resume,
+        drivePath: drivePath.value,
+        extensions: [...selectedExtensions.value],
+        ...(scanScope.value === 'folders' ? { folderPaths: [...scanFolders.value] } : {}),
+      })
+      stopProgressPolling()
       await loadIndex()
+      await refreshScanStatus()
     } else {
-      result = await addFolder({ extensions: [...selectedExtensions.value] })
+      result = await addFolder({ extensions: [...selectedExtensions.value], signal: browserScan.signal })
     }
     if (result) {
-      notice.value = `${t('osDocumentsUpdated')} ${result.indexedCount}. ${t('scanDocumentsSkipped')} ${result.skippedCount}`
+      const stopped = 'cancelled' in result && result.cancelled
+      notice.value = `${stopped ? t('scanStopped') + ' ' : ''}${t('osDocumentsUpdated')} ${result.indexedCount}. ${t('scanDocumentsSkipped')} ${result.skippedCount}`
       if (query.value.trim()) await search()
     }
   } catch (cause) {
     console.error('Could not scan documents:', cause)
     error.value = t('folderIndexError')
   } finally {
+    stopProgressPolling()
+    if (isDesktop.value) await refreshScanStatus()
+    browserScan = undefined
     isScanning.value = false
+    isStopping.value = false
   }
 }
 onMounted(async () => {
@@ -109,6 +197,7 @@ onMounted(async () => {
     if (isDesktop.value) {
       drives.value = await window.electron.invoke('files:list-scan-drives')
       drivePath.value = drives.value[0]?.path ?? ''
+      await refreshScanStatus()
     }
   } catch (cause) {
     console.error('Could not load documents:', cause)
@@ -116,6 +205,9 @@ onMounted(async () => {
   }
 })
 onBeforeUnmount(() => {
+  stopProgressPolling()
+  statusVersion++
+  void stopScan()
   if (searchTimer) clearTimeout(searchTimer)
   searchVersion++
 })
@@ -127,29 +219,54 @@ onBeforeUnmount(() => {
       <h1 class="text-xl font-bold text-surface-900 dark:text-surface-100">{{ t('documentSearchTitle') }}</h1>
       <p class="mt-1 text-sm text-surface-500">{{ t(isDesktop ? 'documentSearchHint' : 'documentSearchBrowserHint') }}</p>
     </header>
-    <fieldset :disabled="isScanning" class="mb-5 space-y-3 rounded-xl border border-surface-200 p-4 text-xs dark:border-surface-700">
+    <div class="mb-5 space-y-3 rounded-xl border border-surface-200 p-4 text-xs dark:border-surface-700">
+    <fieldset :disabled="isScanning" class="space-y-3">
       <label v-if="isDesktop" class="flex flex-wrap items-center gap-3">
         <span>{{ t('scanDriveLabel') }}</span>
-        <select v-model="drivePath" class="rounded-lg border border-surface-200 bg-white px-3 py-2 dark:border-surface-700 dark:bg-surface-800">
-          <option v-for="drive in drives" :key="drive.path" :value="drive.path">{{ drive.label }}</option>
-        </select>
+        <AppDropdown v-model="drivePath" :options="drives.map(drive => ({ value: drive.path, label: drive.label }))" :disabled="isScanning" :aria-label="t('scanDriveLabel')" class="w-40 max-w-full" />
       </label>
+      <div v-if="isDesktop" class="space-y-3">
+        <label class="flex flex-wrap items-center gap-3">
+          <span>{{ t('scanScopeLabel') }}</span>
+          <AppDropdown v-model="scanScope" :disabled="isScanning" :options="[{ value: 'drive', label: t('scanScopeDrive') }, { value: 'folders', label: t('scanScopeFolders') }]" class="w-56 max-w-full" />
+        </label>
+        <template v-if="scanScope === 'folders'">
+          <button type="button" :disabled="isScanning || !drivePath" class="rounded-lg border border-surface-200 px-3 py-2 disabled:opacity-40 dark:border-surface-700" @click="chooseScanFolders">{{ t('scanChooseFolders') }}</button>
+          <ul v-if="scanFolders.length" class="max-h-36 space-y-2 overflow-y-auto">
+            <li v-for="folder in scanFolders" :key="folder" class="flex items-start justify-between gap-2">
+              <span class="break-all font-mono">{{ folder }}</span>
+              <button type="button" :disabled="isScanning" class="shrink-0 rounded p-1 text-surface-500 hover:text-rose-500 disabled:opacity-40" :aria-label="`${t('scanRemoveFolder')}: ${folder}`" @click="scanFolders = scanFolders.filter(path => path !== folder)"><Icon name="lucide:x" size="14" /></button>
+            </li>
+          </ul>
+        </template>
+        <p class="text-surface-500">{{ t('scanPartsHint') }}</p>
+      </div>
       <div class="flex flex-wrap items-center gap-3">
         <span>{{ t('scanExtensionsLabel') }}</span>
         <button type="button" class="text-primary-600 dark:text-primary-400" @click="selectedExtensions = [...extensions]">{{ t('selectAllExtensions') }}</button>
         <button type="button" class="text-surface-500" @click="selectedExtensions = []">{{ t('clearExtensionSelection') }}</button>
       </div>
       <div class="flex flex-wrap gap-x-4 gap-y-2">
-        <label v-for="extension in extensions" :key="extension" class="flex items-center gap-1.5">
-          <input v-model="selectedExtensions" type="checkbox" :value="extension">
-          {{ extension.toUpperCase() }}
-        </label>
+        <UCheckbox v-for="extension in extensions" :key="extension" :model-value="selectedExtensions.includes(extension)"
+          :label="extension.toUpperCase()" :aria-label="extension.toUpperCase()" :disabled="isScanning" size="sm"
+          @update:model-value="checked => toggleScanExtension(extension, checked === true)" />
       </div>
       <p class="text-surface-500">{{ t('scanDurationNotice') }}</p>
-      <button type="button" class="rounded-lg bg-primary-600 px-3 py-2 font-medium text-white disabled:opacity-40" :disabled="isScanning || !selectedExtensions.length || (isDesktop && !drivePath)" @click="scan">
-        {{ t(isScanning ? 'scanDocumentsInProgress' : isDesktop ? 'rescanOsDocuments' : 'scanDocuments') }}
-      </button>
     </fieldset>
+    <div class="flex flex-wrap items-center gap-3">
+      <button type="button" class="rounded-lg bg-primary-600 px-3 py-2 font-medium text-white disabled:opacity-40" :disabled="isScanning || !selectedExtensions.length || (isDesktop && (!drivePath || (scanScope === 'folders' && !scanFolders.length)))" @click="scan()">
+        {{ t(isScanning ? 'scanDocumentsInProgress' : isDesktop ? (scanScope === 'folders' ? 'scanSelectedFolders' : 'rescanOsDocuments') : 'scanDocuments') }}
+      </button>
+      <button v-if="isDesktop && !isScanning && resumableScan" type="button" class="rounded-lg border border-primary-500/50 px-3 py-2 font-medium text-primary-600 dark:text-primary-400" @click="scan(true)">{{ t('scanResume') }}</button>
+      <button v-if="isScanning" type="button" class="rounded-lg border border-rose-500/50 px-3 py-2 font-medium text-rose-600 disabled:opacity-50 dark:text-rose-400" :disabled="isStopping" @click="stopScan">
+        {{ t(isStopping ? 'scanStopping' : 'scanStop') }}
+      </button>
+    </div>
+    </div>
+    <p v-if="isScanning && scanProgress" class="mb-3 text-xs text-surface-500" role="status">
+      {{ t(scanProgress.phase === 'content' ? 'scanContentPhase' : 'scanMetadataPhase') }} · {{ t('scanFoundCount') }} {{ scanProgress.indexedCount }} · {{ t('scanContentCount') }} {{ scanProgress.contentCount }}
+    </p>
+    <p v-if="isDesktop && !isScanning && resumableScan" class="mb-3 text-xs text-surface-500">{{ t('scanSavedProgress') }} {{ resumableScan.drivePath }} · {{ t('scanFoundCount') }} {{ resumableScan.indexedCount }}</p>
     <p v-if="notice" class="mb-3 text-xs text-primary-600 dark:text-primary-400" role="status">{{ notice }}</p>
     <p v-if="error" class="mb-3 text-xs text-rose-500" role="alert">{{ error }}</p>
     <div class="mb-4 space-y-3">

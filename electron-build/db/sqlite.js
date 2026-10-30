@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.dbManager = exports.MAX_FILES_PER_FOLDER = void 0;
+const workspaceFiles_1 = require("../services/workspaceFiles");
 const hiddenFiles_1 = require("../utils/hiddenFiles");
 const fileVisibility_1 = require("../utils/fileVisibility");
 const better_sqlite3_1 = __importDefault(require("better-sqlite3"));
@@ -73,6 +74,21 @@ class DatabaseManager {
         // Включаем WAL-режим для ускорения записи и читаемости из разных потоков
         this.db.pragma('journal_mode = WAL');
         this.createTables();
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS document_scan_job (
+                id INTEGER PRIMARY KEY CHECK (id = 1), config TEXT NOT NULL,
+                phase TEXT NOT NULL, indexed_count INTEGER NOT NULL DEFAULT 0,
+                skipped_count INTEGER NOT NULL DEFAULT 0, content_count INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS document_scan_queue (
+                id INTEGER PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL,
+                size INTEGER, mtime INTEGER, UNIQUE(kind, path)
+            );
+            CREATE TABLE IF NOT EXISTS document_scan_pending_content (
+                path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS document_scan_queue_kind ON document_scan_queue(kind, id);
+        `);
     }
     /** Index a folder recursively. Text files are stored for FTS; other files remain searchable by name. */
     indexFolder(folderPath, requestedLimit = exports.MAX_FILES_PER_FOLDER) {
@@ -191,89 +207,278 @@ class DatabaseManager {
         const root = node_path_1.default.parse(process.env.HOME || node_path_1.default.sep).root || node_path_1.default.sep;
         return [{ path: root, label: root }];
     }
-    /** Scan only the explicitly selected drive and document extensions. */
-    async scanOsDocuments(drivePath, requestedExtensions) {
-        if (!this.db)
-            throw new Error('SQLite is not initialized');
-        const selectedDrive = this.listScanDrives().find(drive => node_path_1.default.resolve(drive.path).toLowerCase() === node_path_1.default.resolve(String(drivePath || '')).toLowerCase());
+    documentScan = null;
+    stopDocumentScan() {
+        if (!this.documentScan)
+            return false;
+        this.documentScan.abort();
+        return true;
+    }
+    /** Resolve and deduplicate selected subtrees without allowing a different disk. */
+    async documentScanRoots(drivePath, folderPaths) {
+        const selectedDrive = this.listScanDrives().find(drive => {
+            const current = node_path_1.default.resolve(drive.path), requested = node_path_1.default.resolve(String(drivePath || ''));
+            return process.platform === 'win32' ? current.toLowerCase() === requested.toLowerCase() : current === requested;
+        });
         if (!selectedDrive)
             throw new Error('Choose an available drive before scanning');
-        const extensions = new Set((Array.isArray(requestedExtensions) ? requestedExtensions : [])
-            .map(extension => String(extension).trim().replace(/^\./, '').toLowerCase())
-            .filter(extension => OS_DOCUMENT_EXTENSIONS.has(extension)));
-        if (!extensions.size)
-            throw new Error('Select at least one document extension before scanning');
-        let indexedCount = 0;
-        let skippedCount = 0;
-        let visited = 0;
-        const visibility = (0, hiddenFiles_1.createFileVisibilityFilter)();
-        const visit = async (directory) => {
-            let entries;
-            try {
-                entries = await node_fs_1.default.promises.readdir(directory, { withFileTypes: true });
+        if (folderPaths !== undefined && (!Array.isArray(folderPaths) || !folderPaths.length))
+            throw new Error('Select at least one folder before scanning');
+        const root = await node_fs_1.default.promises.realpath(selectedDrive.path);
+        const roots = [];
+        for (const folder of folderPaths ?? [root]) {
+            if (typeof folder !== 'string' || !node_path_1.default.isAbsolute(folder))
+                throw new Error('Invalid scan folder');
+            const resolved = await node_fs_1.default.promises.realpath(folder);
+            const relative = node_path_1.default.relative(root, resolved);
+            if (relative === '..' || relative.startsWith('..' + node_path_1.default.sep) || node_path_1.default.isAbsolute(relative))
+                throw new Error('Choose folders on the selected drive');
+            if (!(await node_fs_1.default.promises.stat(resolved)).isDirectory())
+                throw new Error('Scan target must be a folder');
+            if (!roots.some(existing => node_path_1.default.relative(existing, resolved) === ''))
+                roots.push(resolved);
+        }
+        return roots.filter(folder => !roots.some(parent => {
+            if (parent === folder)
+                return false;
+            const relative = node_path_1.default.relative(parent, folder);
+            return relative !== '..' && !relative.startsWith('..' + node_path_1.default.sep) && !node_path_1.default.isAbsolute(relative);
+        }));
+    }
+    documentScanStatus() {
+        const row = this.db?.prepare('SELECT * FROM document_scan_job WHERE id = 1').get();
+        const config = row ? JSON.parse(row.config) : { drivePath: '', extensions: [] };
+        return {
+            ...config, running: Boolean(this.documentScan), resumable: Boolean(row), phase: row?.phase ?? null,
+            indexedCount: row?.indexed_count ?? 0, skippedCount: row?.skipped_count ?? 0, contentCount: row?.content_count ?? 0,
+        };
+    }
+    /** Metadata first, sequential content reads second; queue and batches commit together. */
+    async scanOsDocuments(drivePath, requestedExtensions, folderPaths, resume = false) {
+        if (!this.db)
+            throw new Error('SQLite is not initialized');
+        if (this.documentScan)
+            throw new Error('Document scanning is already running');
+        const controller = new AbortController();
+        this.documentScan = controller;
+        const { signal } = controller;
+        let visibility;
+        try {
+            const saved = resume ? this.documentScanStatus() : null;
+            if (resume && !saved?.resumable)
+                throw new Error('No scan to resume');
+            if (saved) {
+                drivePath = saved.drivePath;
+                requestedExtensions = saved.extensions;
+                folderPaths = saved.folderPaths;
             }
-            catch {
-                return;
+            const extensions = new Set((Array.isArray(requestedExtensions) ? requestedExtensions : [])
+                .map(extension => String(extension).trim().replace(/^\./, '').toLowerCase())
+                .filter(extension => OS_DOCUMENT_EXTENSIONS.has(extension)));
+            if (!extensions.size)
+                throw new Error('Select at least one document extension before scanning');
+            const roots = await this.documentScanRoots(drivePath, folderPaths);
+            const stored = resume ? this.db.prepare('SELECT config FROM document_scan_job WHERE id=1').get() : null;
+            const includeSystemFiles = stored ? JSON.parse(stored.config).includeSystemFiles : this.includeSystemFiles;
+            if (!resume) {
+                const config = JSON.stringify({ drivePath, extensions: [...extensions], ...(folderPaths ? { folderPaths: roots } : {}), includeSystemFiles });
+                this.db.transaction(() => {
+                    this.db.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job;');
+                    this.db.prepare("INSERT INTO document_scan_job(id,config,phase) VALUES(1,?,'metadata')").run(config);
+                    const enqueue = this.db.prepare("INSERT OR IGNORE INTO document_scan_queue(kind,path) VALUES('directory',?)");
+                    for (const root of roots)
+                        enqueue.run(root);
+                })();
             }
-            for (const entry of entries) {
-                visited++;
-                if (visited % 256 === 0)
-                    await new Promise(resolve => setImmediate(resolve));
-                const entryPath = node_path_1.default.join(directory, entry.name);
-                if (entry.isSymbolicLink())
-                    continue;
-                if (entry.isDirectory()) {
-                    if (OS_SCAN_IGNORED_DIRECTORIES.has(entry.name.toLowerCase()))
-                        continue;
-                    if (process.platform !== 'win32' && node_path_1.default.dirname(directory) === node_path_1.default.parse(directory).root &&
-                        OS_SCAN_IGNORED_UNIX_ROOTS.has(entry.name.toLowerCase()))
-                        continue;
-                    try {
-                        if (!this.includeSystemFiles && visibility.isHidden(entryPath))
-                            continue;
+            visibility = (0, hiddenFiles_1.createAsyncFileVisibilityFilter)(signal);
+            const insideRoots = (target) => roots.some(root => {
+                const relative = node_path_1.default.relative(root, target);
+                return relative !== '..' && !relative.startsWith('..' + node_path_1.default.sep) && !node_path_1.default.isAbsolute(relative);
+            });
+            const nextDirectory = this.db.prepare("SELECT id,path FROM document_scan_queue WHERE kind='directory' ORDER BY id LIMIT 1");
+            const enqueue = this.db.prepare('INSERT INTO document_scan_queue(kind,path,size,mtime) VALUES(@kind,@path,@size,@mtime) ON CONFLICT(kind,path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime');
+            const dequeue = this.db.prepare('DELETE FROM document_scan_queue WHERE id=?');
+            const previousFile = this.db.prepare('SELECT f.size,f.mtime,p.path AS needs_content FROM files f LEFT JOIN document_scan_pending_content p ON p.path=f.path WHERE f.path=? AND f.is_deleted=0');
+            const markPending = this.db.prepare('INSERT INTO document_scan_pending_content(path,size,mtime) VALUES(@path,@size,@mtime) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime');
+            const textExtensions = this.readTextExtensions();
+            let skipped = 0;
+            let metadata = [];
+            let queued = [];
+            const flushMetadata = (completedDirectory) => {
+                if (!metadata.length && !queued.length && !skipped && completedDirectory === undefined)
+                    return;
+                this.db.transaction(() => {
+                    if (metadata.length)
+                        this.saveFiles(metadata);
+                    for (const item of queued) {
+                        enqueue.run(item);
+                        if (item.kind === 'content')
+                            markPending.run({ path: item.path, size: item.size, mtime: item.mtime });
                     }
-                    catch {
-                        continue;
-                    }
-                    await visit(entryPath);
-                    continue;
-                }
-                if (!entry.isFile())
-                    continue;
-                const extension = node_path_1.default.extname(entry.name).toLowerCase().slice(1);
-                if (!extensions.has(extension))
-                    continue;
+                    if (completedDirectory !== undefined)
+                        dequeue.run(completedDirectory);
+                    this.db.prepare('UPDATE document_scan_job SET indexed_count=indexed_count+?, skipped_count=skipped_count+? WHERE id=1').run(metadata.length, skipped);
+                })();
+                metadata = [];
+                queued = [];
+                skipped = 0;
+            };
+            while (!signal.aborted) {
+                const directory = nextDirectory.get();
+                if (!directory)
+                    break;
+                let completed = false;
                 try {
-                    if (!this.includeSystemFiles && visibility.isHidden(entryPath)) {
-                        skippedCount++;
-                        continue;
+                    const stat = await node_fs_1.default.promises.lstat(directory.path);
+                    const canonical = await node_fs_1.default.promises.realpath(directory.path);
+                    if (!stat.isDirectory() || stat.isSymbolicLink() || !insideRoots(canonical) || (!includeSystemFiles && await visibility.isHidden(directory.path))) {
+                        skipped++;
+                        completed = true;
                     }
-                    const stat = await node_fs_1.default.promises.stat(entryPath);
-                    if (!stat.isFile())
-                        continue;
-                    const existing = this.db.prepare('SELECT size, mtime FROM files WHERE path = ? AND is_deleted = 0').get(entryPath);
-                    const mtime = Math.floor(stat.mtimeMs);
-                    if (!existing || existing.size !== stat.size || existing.mtime !== mtime) {
-                        let content = '';
-                        if (this.readTextExtensions().has('.' + extension) && stat.size <= 2 * 1024 * 1024) {
-                            content = await node_fs_1.default.promises.readFile(entryPath, 'utf8');
+                    else {
+                        const handle = await node_fs_1.default.promises.opendir(directory.path);
+                        completed = true;
+                        for await (const entry of handle) {
+                            if (signal.aborted) {
+                                completed = false;
+                                break;
+                            }
+                            const entryPath = node_path_1.default.join(directory.path, entry.name);
+                            if (entry.isSymbolicLink())
+                                continue;
+                            if (entry.isDirectory()) {
+                                if (OS_SCAN_IGNORED_DIRECTORIES.has(entry.name.toLowerCase()))
+                                    continue;
+                                if (process.platform !== 'win32' && node_path_1.default.dirname(directory.path) === node_path_1.default.parse(directory.path).root && OS_SCAN_IGNORED_UNIX_ROOTS.has(entry.name.toLowerCase()))
+                                    continue;
+                                queued.push({ kind: 'directory', path: entryPath, size: null, mtime: null });
+                            }
+                            else if (entry.isFile()) {
+                                const extension = node_path_1.default.extname(entry.name).slice(1).toLowerCase();
+                                if (!extensions.has(extension))
+                                    continue;
+                                try {
+                                    if (!includeSystemFiles && await visibility.isHidden(entryPath)) {
+                                        skipped++;
+                                        continue;
+                                    }
+                                    const fileStat = await node_fs_1.default.promises.lstat(entryPath);
+                                    if (signal.aborted) {
+                                        completed = false;
+                                        break;
+                                    }
+                                    if (!fileStat.isFile() || fileStat.isSymbolicLink())
+                                        continue;
+                                    const mtime = Math.floor(fileStat.mtimeMs);
+                                    const existing = previousFile.get(entryPath);
+                                    if (!existing || existing.size !== fileStat.size || existing.mtime !== mtime) {
+                                        metadata.push({ path: entryPath, name: entry.name, extension, size: fileStat.size, mtime, content: '' });
+                                        if (textExtensions.has('.' + extension) && fileStat.size <= 2 * 1024 * 1024)
+                                            queued.push({ kind: 'content', path: entryPath, size: fileStat.size, mtime });
+                                    }
+                                    else if (existing.needs_content && textExtensions.has('.' + extension) && fileStat.size <= 2 * 1024 * 1024) {
+                                        queued.push({ kind: 'content', path: entryPath, size: fileStat.size, mtime });
+                                    }
+                                }
+                                catch {
+                                    if (!signal.aborted && visibility.failure)
+                                        throw visibility.failure;
+                                    if (!signal.aborted)
+                                        skipped++;
+                                }
+                            }
+                            if (metadata.length >= 100 || queued.length >= 100) {
+                                flushMetadata();
+                                await new Promise(resolve => setImmediate(resolve));
+                            }
                         }
-                        this.saveFile({ path: entryPath, name: entry.name, extension, size: stat.size, mtime, content });
-                        indexedCount++;
+                        if (signal.aborted)
+                            completed = false;
                     }
                 }
                 catch {
-                    skippedCount++;
+                    if (!signal.aborted && visibility.failure)
+                        throw visibility.failure;
+                    if (!signal.aborted) {
+                        skipped++;
+                        completed = true;
+                    }
                 }
+                flushMetadata(completed ? directory.id : undefined);
             }
-        };
-        try {
-            await visit(selectedDrive.path);
+            if (!signal.aborted)
+                this.db.prepare("UPDATE document_scan_job SET phase='content' WHERE id=1").run();
+            const clearPending = this.db.prepare('DELETE FROM document_scan_pending_content WHERE path=? AND size=? AND mtime=?');
+            const updateContent = this.db.prepare('UPDATE files SET content=? WHERE path=? AND size=? AND mtime=? AND is_deleted=0');
+            const nextContents = this.db.prepare("SELECT id,path,size,mtime FROM document_scan_queue WHERE kind='content' ORDER BY id LIMIT 100");
+            while (!signal.aborted) {
+                const items = nextContents.all();
+                if (!items.length)
+                    break;
+                const finished = [];
+                let contentBytes = 0;
+                skipped = 0;
+                for (const item of items) {
+                    if (signal.aborted)
+                        break;
+                    try {
+                        const stat = await node_fs_1.default.promises.lstat(item.path);
+                        const canonical = await node_fs_1.default.promises.realpath(item.path);
+                        if (!stat.isFile() || stat.isSymbolicLink() || !insideRoots(canonical) || stat.size !== item.size || Math.floor(stat.mtimeMs) !== item.mtime || (!includeSystemFiles && await visibility.isHidden(item.path))) {
+                            skipped++;
+                            finished.push(item);
+                            continue;
+                        }
+                        const content = await node_fs_1.default.promises.readFile(item.path, { encoding: 'utf8', signal });
+                        if (signal.aborted)
+                            break;
+                        const after = await node_fs_1.default.promises.stat(item.path);
+                        if (after.size !== item.size || Math.floor(after.mtimeMs) !== item.mtime) {
+                            skipped++;
+                            finished.push(item);
+                            continue;
+                        }
+                        finished.push({ ...item, content });
+                        contentBytes += content.length;
+                        if (contentBytes >= 4 * 1024 * 1024)
+                            break;
+                    }
+                    catch {
+                        if (signal.aborted)
+                            break;
+                        if (visibility.failure)
+                            throw visibility.failure;
+                        skipped++;
+                        finished.push(item);
+                    }
+                }
+                if (finished.length)
+                    this.db.transaction(() => {
+                        let count = 0;
+                        for (const item of finished) {
+                            if (item.content !== undefined) {
+                                updateContent.run(item.content, item.path, item.size, item.mtime);
+                                clearPending.run(item.path, item.size, item.mtime);
+                                count++;
+                            }
+                            dequeue.run(item.id);
+                        }
+                        this.db.prepare('UPDATE document_scan_job SET content_count=content_count+?, skipped_count=skipped_count+? WHERE id=1').run(count, skipped);
+                    })();
+                await new Promise(resolve => setImmediate(resolve));
+            }
+            const result = this.documentScanStatus();
+            if (!signal.aborted)
+                this.db.transaction(() => {
+                    this.db.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job;');
+                })();
+            return { indexedCount: result.indexedCount, skippedCount: result.skippedCount, cancelled: signal.aborted };
         }
-        catch {
-            skippedCount++;
+        finally {
+            visibility?.dispose();
+            if (this.documentScan === controller)
+                this.documentScan = null;
         }
-        return { indexedCount, skippedCount };
     }
     readTextExtensions() {
         return new Set([
@@ -359,6 +564,143 @@ class DatabaseManager {
         }
         const stat = node_fs_1.default.statSync(record.path);
         this.saveFile({ path: record.path, name: node_path_1.default.basename(record.path), extension: node_path_1.default.extname(record.path).slice(1), size: stat.size, mtime: Math.floor(stat.mtimeMs), content });
+    }
+    createWorkspaceFolder(parentPath, requestedName) {
+        if (!this.db || !node_path_1.default.isAbsolute(parentPath))
+            throw new Error('Choose a parent folder');
+        const name = String(requestedName || '').trim();
+        if (!name || name.length > 120 || /[\\/:*?"<>|\x00-\x1f]/.test(name) || name.startsWith('.') || /[. ]$/.test(name) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name))
+            throw new Error('Invalid workspace name');
+        const parent = node_fs_1.default.realpathSync(parentPath);
+        if (!node_fs_1.default.statSync(parent).isDirectory())
+            throw new Error('Parent folder not found');
+        const target = node_path_1.default.join(parent, name);
+        node_fs_1.default.mkdirSync(target);
+        try {
+            this.db.prepare('INSERT INTO indexed_folders(path,name,indexed_count) VALUES(?,?,0)').run(target, name);
+        }
+        catch (error) {
+            node_fs_1.default.rmdirSync(target);
+            throw error;
+        }
+        return { name, path: target, count: 0 };
+    }
+    workspaceTarget(folderPath) {
+        if (!this.db || !node_path_1.default.isAbsolute(folderPath))
+            throw new Error('Workspace not found');
+        const folder = this.db.prepare('SELECT path FROM indexed_folders WHERE path=?').get(folderPath);
+        if (!folder || !this.isFileVisible(folder.path))
+            throw new Error('Workspace not found');
+        const target = node_fs_1.default.realpathSync(folder.path);
+        if (!node_fs_1.default.statSync(target).isDirectory())
+            throw new Error('Workspace folder is unavailable');
+        return node_path_1.default.resolve(folder.path);
+    }
+    async importFileToWorkspace(source, folderPath, maxFiles = 1000) {
+        const target = this.workspaceTarget(folderPath);
+        if (!this.isFileVisible(source))
+            throw new Error('Hidden and system files are excluded');
+        if (node_path_1.default.relative(node_path_1.default.dirname(node_fs_1.default.realpathSync(source)), node_fs_1.default.realpathSync(target)) === '') {
+            this.indexSingleFile(source, folderPath);
+            return source;
+        }
+        const limit = Math.max(1, Math.min(5000, Math.floor(maxFiles) || 1000));
+        if ((this.listFolders().find(folder => folder.path === folderPath)?.count ?? 0) >= limit)
+            throw new Error('Folder limit reached');
+        const placed = await (0, workspaceFiles_1.placeWorkspaceFile)(source, target, false, candidate => Boolean(this.db.prepare('SELECT 1 FROM files WHERE path=?').get(candidate)));
+        try {
+            this.indexSingleFile(placed.destination, folderPath);
+        }
+        catch (error) {
+            await node_fs_1.default.promises.unlink(placed.destination).catch(() => { });
+            throw error;
+        }
+        return placed.destination;
+    }
+    workspaceTransferBusy = false;
+    async transferWorkspaceFiles(request) {
+        if (this.workspaceTransferBusy)
+            throw new Error('A file operation is already running');
+        this.workspaceTransferBusy = true;
+        try {
+            return await this.performWorkspaceTransfer(request);
+        }
+        finally {
+            this.workspaceTransferBusy = false;
+        }
+    }
+    async performWorkspaceTransfer(request) {
+        if (!this.db || !['copy', 'move'].includes(request.mode) || !Array.isArray(request.fileIds) || !request.fileIds.length || request.fileIds.length > 5000 || request.fileIds.some(id => !Number.isInteger(id)))
+            throw new Error('Invalid file transfer');
+        const target = this.workspaceTarget(request.targetFolderPath);
+        const result = { completed: [], failed: [] };
+        const limit = Math.max(1, Math.min(5000, Math.floor(request.maxFiles ?? 1000) || 1000));
+        let count = this.listFolders().find(folder => folder.path === request.targetFolderPath)?.count ?? 0;
+        for (const fileId of new Set(request.fileIds)) {
+            let placed;
+            let sourceRemoved = false;
+            let source = '';
+            try {
+                const record = this.db.prepare('SELECT id,path,size,mtime,extension,content FROM files WHERE id=? AND is_deleted=0').get(fileId);
+                if (!record || !this.isFileVisible(record.path))
+                    throw new Error('Indexed file is unavailable');
+                source = record.path;
+                if (request.mode === 'move' && node_path_1.default.relative(node_path_1.default.dirname(node_fs_1.default.realpathSync(source)), node_fs_1.default.realpathSync(target)) === '') {
+                    result.completed.push({ sourceId: fileId, id: fileId, oldPath: source, path: source, name: node_path_1.default.basename(source) });
+                    continue;
+                }
+                const relative = node_path_1.default.relative(target, source);
+                const alreadyInside = relative !== '..' && !relative.startsWith('..' + node_path_1.default.sep) && !node_path_1.default.isAbsolute(relative);
+                if (count >= limit && (request.mode === 'copy' || !alreadyInside))
+                    throw new Error('Folder limit reached');
+                placed = await (0, workspaceFiles_1.placeWorkspaceFile)(source, target, request.mode === 'move', candidate => Boolean(this.db.prepare('SELECT 1 FROM files WHERE path=?').get(candidate)));
+                const unchanged = record.size === placed.original.size && Math.floor(record.mtime) === Math.floor(placed.original.mtimeMs);
+                let content = unchanged ? record.content : '';
+                if (this.readTextExtensions().has('.' + record.extension) && placed.stat.size <= 2 * 1024 * 1024 && (!content || record.size !== placed.original.size || Math.floor(record.mtime) !== Math.floor(placed.original.mtimeMs))) {
+                    content = await node_fs_1.default.promises.readFile(placed.destination, 'utf8');
+                }
+                const destination = placed.destination, snapshot = placed;
+                let newId = fileId;
+                this.db.transaction(() => {
+                    if (!(0, workspaceFiles_1.sameFileVersion)(snapshot.original, node_fs_1.default.lstatSync(source)))
+                        throw new Error('The source file changed during transfer');
+                    if (request.mode === 'move') {
+                        this.db.prepare('UPDATE files SET path=?,name=?,size=?,mtime=?,content=? WHERE id=?').run(destination, node_path_1.default.basename(destination), snapshot.stat.size, Math.floor(snapshot.stat.mtimeMs), content, fileId);
+                        this.db.prepare("DELETE FROM document_scan_queue WHERE kind='content' AND path=?").run(source);
+                        this.db.prepare('DELETE FROM document_scan_pending_content WHERE path=?').run(source);
+                        node_fs_1.default.unlinkSync(source);
+                        sourceRemoved = true;
+                    }
+                    else {
+                        const insert = this.db.prepare('INSERT INTO files(path,name,extension,size,mtime,content) VALUES(?,?,?,?,?,?)').run(destination, node_path_1.default.basename(destination), record.extension, snapshot.stat.size, Math.floor(snapshot.stat.mtimeMs), content);
+                        newId = Number(insert.lastInsertRowid);
+                        this.db.prepare('INSERT INTO file_tags(file_id,tag) SELECT ?,tag FROM file_tags WHERE file_id=?').run(newId, fileId);
+                        this.db.prepare('INSERT INTO file_notes(file_id,note,updated_at) SELECT ?,note,updated_at FROM file_notes WHERE file_id=?').run(newId, fileId);
+                    }
+                })();
+                if (request.mode === 'copy' || !alreadyInside)
+                    count++;
+                result.completed.push({ sourceId: fileId, id: newId, oldPath: source, path: destination, name: node_path_1.default.basename(destination) });
+            }
+            catch (error) {
+                if (placed) {
+                    let restored = !sourceRemoved;
+                    if (sourceRemoved) {
+                        try {
+                            await node_fs_1.default.promises.copyFile(placed.destination, source, node_fs_1.default.constants.COPYFILE_EXCL);
+                            await node_fs_1.default.promises.utimes(source, placed.original.atime, placed.original.mtime);
+                            restored = true;
+                        }
+                        catch { /* Keep the destination if restoring the source is impossible. */ }
+                    }
+                    if (restored)
+                        await node_fs_1.default.promises.unlink(placed.destination).catch(() => { });
+                }
+                result.failed.push({ fileId, message: error instanceof Error ? error.message : String(error) });
+            }
+            await new Promise(resolve => setImmediate(resolve));
+        }
+        return result;
     }
     getFileContent(fileId) {
         if (!this.db || !Number.isInteger(fileId))
@@ -632,25 +974,19 @@ class DatabaseManager {
     /**
      * Индексация или обновление файла в базе
      */
-    saveFile(file) {
-        if (!this.db)
+    fileUpsert = null;
+    saveFile(file) { this.saveFiles([file]); }
+    saveFiles(files) {
+        if (!this.db || !files.length)
             return;
-        const insertOrReplace = this.db.transaction(() => {
-            // 1. Записываем/обновляем метаданные в основной таблице
-            const stmt = this.db.prepare(`
-        INSERT INTO files (path, name, extension, size, mtime, content)
-        VALUES (@path, @name, @extension, @size, @mtime, @content)
-        ON CONFLICT(path) DO UPDATE SET
-          name = excluded.name,
-          extension = excluded.extension,
-          size = excluded.size,
-          mtime = excluded.mtime,
-          content = excluded.content,
-          is_deleted = 0;
-      `);
-            stmt.run(file);
-        });
-        insertOrReplace();
+        this.fileUpsert ??= this.db.prepare(`
+            INSERT INTO files (path,name,extension,size,mtime,content)
+            VALUES (@path,@name,@extension,@size,@mtime,@content)
+            ON CONFLICT(path) DO UPDATE SET name=excluded.name, extension=excluded.extension,
+                size=excluded.size, mtime=excluded.mtime, content=excluded.content, is_deleted=0
+        `);
+        this.db.transaction(() => { for (const file of files)
+            this.fileUpsert.run(file); })();
     }
     /**
      * Полнотекстовый поиск по FTS5 с подсветкой найденого фрагмента
@@ -710,6 +1046,7 @@ class DatabaseManager {
         if (this.db) {
             this.db.close();
             this.db = null;
+            this.fileUpsert = null;
         }
     }
 }

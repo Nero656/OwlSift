@@ -1,6 +1,7 @@
+import type { WorkspaceTransferMode } from '../../src/types/workspace'
 import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibility'
 import { imageFileExtensions, scriptFileExtensions } from '../utils/fileTypeGroups'
-import type { IndexedFolder, LocalFile } from '../types/file'
+import type { IndexedFolder, LocalFile, ChatMessage } from '../types/file'
 import { createDocumentBlob, extractDocumentText, removeDocumentBlob, storeDocumentBlob } from '../utils/documents'
 import { creatableFileTypes, defaultFileTemplate } from './useFileTypes'
 import { useLanguage } from './useLanguage'
@@ -91,6 +92,42 @@ export const useFiles = () => {
   const browserFilesLoaded = useState('browser-files-loaded', () => false)
   const fileDialogFolder = useState<string | null>('file-dialog-folder', () => null)
   const isCreateFileOpen = useState('create-file-open', () => false)
+  const fileTransferRequest = useState<{fileIds:number[];mode:WorkspaceTransferMode;targetFolderPath?:string} | null>('file-transfer-request', () => null)
+  const openFileTransfer = (fileIds: number[], mode: WorkspaceTransferMode, targetFolderPath?: string) => {
+    if (!isDesktop()) return
+    const existing = new Set(files.value.map(file => file.id))
+    const ids = [...new Set(fileIds)].filter(id => existing.has(id))
+    if (ids.length) fileTransferRequest.value = {fileIds:ids,mode,targetFolderPath}
+  }
+  const createWorkspaceFolder = async (parentPath: string, name: string) => {
+    const folder = await window.electron.invoke('folders:create', {parentPath,name})
+    await loadIndex()
+    return folder
+  }
+  const transferWorkspaceFiles = async (fileIds: number[], targetFolderPath: string, mode: WorkspaceTransferMode) => {
+    const result = await window.electron.invoke('files:transfer-workspace', {fileIds,targetFolderPath,mode,maxFiles:maxFilesPerFolder.value})
+    if (mode === 'move') {
+      const moves = new Map(result.completed.map(file => [file.sourceId,file]))
+      const conversations = useState<Record<string,ChatMessage[]>>('ai-conversations', () => ({}))
+      for (const messages of Object.values(conversations.value)) for (const message of messages) {
+        for (const reference of [...(message.attachments ?? []),...(message.createdFiles ?? []),...(message.editedFiles ?? [])]) {
+          const moved = moves.get(reference.id)
+          if (moved && (!reference.path || reference.path === moved.oldPath)) { reference.path=moved.path; reference.name=moved.name }
+        }
+      }
+      const sessions = useState<Record<string,{paths:string[];createdAt:number;title?:string}>>('ai-chat-sessions', () => ({}))
+      const paths = new Map(result.completed.map(file => [file.oldPath,file.path]))
+      for (const session of Object.values(sessions.value)) session.paths = session.paths.map(value => paths.get(value) ?? value)
+      if (activeFile.value) {
+        const moved = moves.get(activeFile.value.id)
+        if (moved) activeFile.value = {...activeFile.value,path:moved.path,name:moved.name}
+      }
+      selectedFileIds.value = selectedFileIds.value.filter(id => !moves.has(id))
+    }
+    await loadIndex()
+    if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
+    return result
+  }
   let searchRequestId = 0
 
   const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString(language.value)
@@ -127,7 +164,7 @@ export const useFiles = () => {
       if (existing) return existing
     }
     if (selectedFolder.value) {
-      const selected = folders.value.find(folder => folder.name === selectedFolder.value)
+      const selected = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))
       if (selected) return selected
     }
     if (folders.value[0]) return folders.value[0]
@@ -181,7 +218,7 @@ export const useFiles = () => {
       browserVisibilityMode.value = settings.value.showSystemFiles
       selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
       if (activeFile.value) activeFile.value = files.value.find(file => file.id === activeFile.value?.id) ?? null
-      if (selectedFolder.value && !folders.value.some(folder => folder.name === selectedFolder.value)) selectedFolder.value = null
+      if (selectedFolder.value && !folders.value.some(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))) selectedFolder.value = null
       return
     }
     await syncSystemFilesPreference()
@@ -189,11 +226,11 @@ export const useFiles = () => {
     files.value = records.map(record => toLocalFile(record, language.value))
     folders.value = indexedFolders
     selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
-    if (selectedFolder.value && !folders.value.some(folder => folder.name === selectedFolder.value)) selectedFolder.value = null
+    if (selectedFolder.value && !folders.value.some(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))) selectedFolder.value = null
     if (activeFile.value) activeFile.value = files.value.find(file => file.path === activeFile.value?.path) ?? null
   }
 
-  const addFolder = async (options: { extensions?: string[] } = {}) => {
+  const addFolder = async (options: { extensions?: string[]; signal?: AbortSignal } = {}) => {
     if (isDesktop()) {
       await syncSystemFilesPreference()
       const result = await window.electron.invoke('files:choose-and-index', { maxFiles: maxFilesPerFolder.value })
@@ -205,12 +242,14 @@ export const useFiles = () => {
     if (picker) {
       try {
         const directory = await picker()
+        if (options.signal?.aborted) return { folderPath: '', indexedCount: 0, skippedCount: 0, limit: maxFilesPerFolder.value, cancelled: true }
         if (excludedBySettings(directory.name)) throw new Error('Hidden folders cannot be indexed')
         const folder = createVirtualFolder(directory.name)
         let indexedCount = 0
         let skippedCount = 0
         const visit = async (handle: FileSystemDirectoryHandle, prefix: string) => {
           for await (const [name, entry] of (handle as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries()) {
+            if (options.signal?.aborted) return
             if (excludedBySettings(name)) { skippedCount++; continue }
             if (indexedCount >= maxFilesPerFolder.value) {
               skippedCount += 1
@@ -223,6 +262,7 @@ export const useFiles = () => {
             const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() ?? '' : ''
             if (options.extensions?.length && !options.extensions.includes(extension)) { skippedCount++; continue }
             const source = await (entry as FileSystemFileHandle).getFile()
+            if (options.signal?.aborted) return
             await addBrowserFile(source, prefix)
             indexedCount += 1
           }
@@ -230,7 +270,7 @@ export const useFiles = () => {
         await visit(directory, folder.path)
         refreshFolderCounts()
         saveBrowserState()
-        return { folderPath: folder.path, indexedCount, skippedCount, limit: maxFilesPerFolder.value }
+        return { folderPath: folder.path, indexedCount, skippedCount, limit: maxFilesPerFolder.value, cancelled: options.signal?.aborted ?? false }
       } catch (error: any) {
         if (error?.name === 'AbortError') return null
         throw error
@@ -281,7 +321,7 @@ export const useFiles = () => {
     await syncSystemFilesPreference()
     const added: LocalFile[] = []
     let skipped = 0
-    const target = folderPath ?? folders.value.find(folder => folder.name === selectedFolder.value)?.path
+    const target = folderPath ?? folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path
     for (const source of sources) {
       try {
         if (isDesktop()) {
@@ -304,10 +344,10 @@ export const useFiles = () => {
   }
 
   const addOneFile = async (folderPath?: string) => {
-    const folder = folderPath || folders.value.find(item => item.name === selectedFolder.value)?.path
+    const folder = folderPath || folders.value.find(item => (item.path === selectedFolder.value || item.name === selectedFolder.value))?.path
     if (isDesktop()) {
       await syncSystemFilesPreference()
-      const result = await window.electron.invoke('files:choose-and-index-file', { folderPath: folder })
+      const result = await window.electron.invoke('files:choose-and-index-file', { folderPath: folder, maxFiles: maxFilesPerFolder.value })
       if (result) await loadIndex()
       return result
     }
@@ -452,7 +492,7 @@ export const useFiles = () => {
   const removeIndexedFolder = async (folderPath: string) => {
     if (isDesktop()) {
       await window.electron.invoke('folders:remove-from-index', folderPath)
-      if (folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) selectedFolder.value = null
+      if (selectedFolder.value === folderPath || folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) selectedFolder.value = null
       await loadIndex()
       return
     }
@@ -460,7 +500,7 @@ export const useFiles = () => {
     excludedBrowserFiles.value = excludedBrowserFiles.value.filter(file => file.path !== folderPath && !file.path.startsWith(`${folderPath}/`))
     excludedBrowserFolders.value = excludedBrowserFolders.value.filter(folder => folder.path !== folderPath && !folder.path.startsWith(`${folderPath}/`))
     folders.value = folders.value.filter(folder => folder.path !== folderPath)
-    if (folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) selectedFolder.value = null
+    if (selectedFolder.value === folderPath || folders.value.find(folder => folder.path === folderPath)?.name === selectedFolder.value) selectedFolder.value = null
     if (activeFile.value && (activeFile.value.path === folderPath || activeFile.value.path.startsWith(`${folderPath}/`))) activeFile.value = null
     if (searchResults.value) {
       searchResults.value = searchResults.value.filter(file => file.path !== folderPath && !file.path.startsWith(`${folderPath}/`))
@@ -630,8 +670,11 @@ export const useFiles = () => {
           : selectedType.value === '__images__' ? imageFileExtensions.has(extension)
             : extension === selectedType.value.toLowerCase())
       const matchesTag = !selectedTag.value || file.tags.includes(selectedTag.value)
-      const folderPath = folders.value.find(folder => folder.name === selectedFolder.value)?.path
-      return matchesType && matchesTag && (!selectedFolder.value || file.path === folderPath || file.path.startsWith(`${folderPath ?? selectedFolder.value}/`) || file.path.startsWith(folderPath ?? selectedFolder.value))
+      const folderPath = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path
+      const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/$/, '')
+      const root = normalize(folderPath ?? selectedFolder.value ?? '')
+      const filePath = normalize(file.path)
+      return matchesType && matchesTag && (!root || filePath === root || filePath.startsWith(root + '/'))
     }).sort((a, b) => {
       if (sortBy.value === 'date') return (b.mtimeValue ?? 0) - (a.mtimeValue ?? 0)
       if (sortBy.value === 'name') return a.name.localeCompare(b.name)
@@ -644,12 +687,12 @@ export const useFiles = () => {
   const selectFile = (file: LocalFile) => { activeFile.value = file; showFilePreview.value = true }
   const getFileTypeCount = (extension: string) => files.value.filter(file => file.extension === extension).length
   const openCreateFileDialog = (folderPath?: string | null) => {
-    fileDialogFolder.value = folderPath ?? folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? folders.value[0]?.path ?? null
+    fileDialogFolder.value = folderPath ?? folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? folders.value[0]?.path ?? null
     isCreateFileOpen.value = true
   }
 
   return {
-    importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
+    fileTransferRequest, openFileTransfer, createWorkspaceFolder, transferWorkspaceFiles, importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
     selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
     addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles, searchAllIndexedFiles, searchOsDocuments,
     fileDialogFolder, isCreateFileOpen, openCreateFileDialog,

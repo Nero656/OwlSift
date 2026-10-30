@@ -1,27 +1,56 @@
 <script setup lang="ts">
 import type { IndexedFolder } from '~/types/file'
 
-const { folders, selectedFolder, removeIndexedFolder, maxFilesPerFolder, addOneFile, openCreateFileDialog } = useFiles()
+const { folders, selectedFolder, removeIndexedFolder, maxFilesPerFolder, addOneFile, openCreateFileDialog, createWorkspaceFolder } = useFiles()
 const { t } = useLanguage()
 const folderView = useState<'list' | 'grid'>('folder-view', () => 'grid')
 const folderToRemove = ref<IndexedFolder | null>(null)
 const removeError = ref('')
 const isRemoving = ref(false)
 const fileActionNotice = ref('')
+const desktop = ref(false)
+const createDialog = ref<HTMLDialogElement | null>(null)
+const newFolderName = ref('')
+const parentPath = ref('')
+const creating = ref(false)
+const createError = ref('')
+onMounted(() => { desktop.value = Boolean(window.electron) })
+const openCreateWorkspace = async () => {
+  newFolderName.value = ''; createError.value = ''
+  createDialog.value?.showModal()
+  try { if (!parentPath.value) parentPath.value = await window.electron.invoke('folders:default-location') }
+  catch { createError.value = t('workspaceCreateError') }
+}
+const chooseParent = async () => {
+  try {
+    const selected = await window.electron.invoke('folders:choose-parent')
+    if (selected) parentPath.value = selected
+  } catch { createError.value = t('workspaceCreateError') }
+}
+const createWorkspace = async () => {
+  if (creating.value || !parentPath.value || !newFolderName.value.trim()) return
+  creating.value = true; createError.value = ''
+  try {
+    await createWorkspaceFolder(parentPath.value,newFolderName.value)
+    createDialog.value?.close()
+    fileActionNotice.value = t('workspaceCreated')
+  } catch (cause) { createError.value = `${t('workspaceCreateError')} ${cause instanceof Error ? cause.message : String(cause)}` }
+  finally { creating.value = false }
+}
 
 const addFileToFolder = async (folderPath: string) => {
   fileActionNotice.value = ''
   try {
     const result = await addOneFile(folderPath)
-    if (result) fileActionNotice.value = `${t('folderFilesIndexed')} ${result.indexedCount}`
+    if (result) fileActionNotice.value = `${t('folderFilesIndexed')} ${result.indexedCount}${result.skippedCount ? '. ' + t('scanDocumentsSkipped') + ' ' + result.skippedCount : ''}`
   } catch (error) {
     console.error('Could not add file to folder:', error)
     fileActionNotice.value = t('fileAddError')
   }
 }
 
-const openFolder = async (folderName: string) => {
-  selectedFolder.value = folderName
+const openFolder = async (folderPath: string) => {
+  selectedFolder.value = folderPath
   await navigateTo('/')
 }
 
@@ -45,6 +74,7 @@ const confirmRemoveFolder = async () => {
   <section class="flex-1 overflow-y-auto p-5 md:p-7" @dragover.prevent @drop.prevent.stop>
     <header class="mb-5 flex flex-wrap items-center justify-between gap-3">
       <h1 class="text-xl font-bold text-surface-900 dark:text-surface-100">{{ t('workspaces') }}</h1>
+      <UButton v-if="desktop" icon="i-lucide-folder-plus" @click="openCreateWorkspace">{{ t('workspaceCreate') }}</UButton>
       <p class="mr-auto basis-full text-xs text-surface-500">{{ t('folderIndexLimit') }} <strong class="font-semibold text-surface-700 dark:text-surface-300">{{ maxFilesPerFolder }}</strong></p>
       <p v-if="fileActionNotice" class="basis-full text-xs text-primary-600">{{ fileActionNotice }}</p>
       <div class="inline-flex rounded-lg border border-surface-200 p-1 dark:border-surface-700" role="group" :aria-label="t('workspaces')">
@@ -88,7 +118,7 @@ const confirmRemoveFolder = async () => {
           <button
             type="button"
             class="flex-1 rounded-lg bg-primary-500/10 px-3 py-2 text-xs font-medium text-primary-600 transition hover:bg-primary-500/20 dark:text-primary-400"
-            @click="openFolder(folder.name)"
+            @click="openFolder(folder.path)"
           >{{ t('openFolder') }}</button>
           <button
             type="button"
@@ -118,6 +148,16 @@ const confirmRemoveFolder = async () => {
   </section>
 
   <Teleport to="body">
+    <dialog ref="createDialog" aria-labelledby="create-workspace-title" class="m-auto w-[calc(100%-2rem)] max-w-lg rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100" @cancel="creating && $event.preventDefault()">
+      <h2 id="create-workspace-title" class="text-base font-semibold">{{ t('workspaceCreate') }}</h2>
+      <form class="mt-4 space-y-4" @submit.prevent="createWorkspace">
+        <label class="block text-sm">{{ t('workspaceName') }}<input v-model="newFolderName" :disabled="creating" maxlength="120" autofocus required class="mt-2 w-full rounded-lg border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"></label>
+        <div class="text-sm"><p>{{ t('workspaceParent') }}</p><p class="mt-2 break-all rounded-lg bg-surface-50 p-3 font-mono text-xs dark:bg-surface-800">{{ parentPath }}</p><UButton type="button" class="mt-2" color="neutral" variant="outline" :disabled="creating" @click="chooseParent">{{ t('workspaceChooseParent') }}</UButton></div>
+        <p class="text-xs text-surface-500">{{ t('workspacePhysicalHint') }}</p>
+        <p v-if="createError" role="alert" class="break-words text-xs text-rose-500">{{ createError }}</p>
+        <div class="flex justify-end gap-2"><UButton type="button" color="neutral" variant="outline" :disabled="creating" @click="createDialog?.close()">{{ t('cancel') }}</UButton><UButton type="submit" :loading="creating" :disabled="creating || !newFolderName.trim() || !parentPath">{{ t('create') }}</UButton></div>
+      </form>
+    </dialog>
     <div v-if="folderToRemove" class="fixed inset-0 z-[100] flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm" @click.self="!isRemoving && (folderToRemove = null)">
       <section role="dialog" aria-modal="true" aria-labelledby="remove-folder-title" class="w-full max-w-md rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900">
         <h2 id="remove-folder-title" class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ t('removeFolderTitle') }}</h2>

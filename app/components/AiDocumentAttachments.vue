@@ -39,7 +39,7 @@ const open = () => {
   query.value = ''
   page.value = 1
   const current = folders.value.find(folder => folder.path === folderPath.value)
-  folderPath.value = current?.path ?? folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? folders.value[0]?.path ?? ''
+  folderPath.value = current?.path ?? folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? folders.value[0]?.path ?? ''
   dialog.value?.showModal()
 }
 const selectPage = () => { draft.value = [...new Set([...draft.value, ...pageFiles.value.map(file => file.id)])] }

@@ -100,10 +100,7 @@ const checkModel = async () => {
           </section>
           <section class="mt-5 rounded-2xl border border-surface-200 bg-white p-4 sm:p-6 dark:border-surface-800 dark:bg-surface-900">
             <h2 class="text-sm font-semibold text-surface-900 dark:text-surface-100">{{ t('aiResponseNotificationsTitle') }}</h2>
-            <label class="mt-4 flex items-center justify-between gap-4 text-sm text-surface-700 dark:text-surface-300">
-              <span><span class="block font-medium">{{ t('aiResponseNotifications') }}</span><span class="mt-1 block text-xs text-surface-500">{{ t('aiResponseNotificationsDescription') }}</span></span>
-              <input v-model="settings.aiResponseNotifications" type="checkbox" class="h-5 w-5 shrink-0 accent-primary-600">
-            </label>
+            <UCheckbox v-model="settings.aiResponseNotifications" :label="t('aiResponseNotifications')" :aria-label="t('aiResponseNotifications')" :description="t('aiResponseNotificationsDescription')" indicator="end" size="lg" class="mt-4 flex items-center justify-between gap-4 text-sm text-surface-700 dark:text-surface-300" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
             <label class="mt-5 block max-w-sm text-sm text-surface-700 dark:text-surface-300" :class="!settings.aiResponseNotifications && 'opacity-50'">{{ t('aiResponseToastDuration') }}
               <AppDropdown v-model="settings.aiResponseToastDuration" :options="responseToastDurationOptions" :disabled="!settings.aiResponseNotifications" class="mt-2 w-full" />
             </label>
@@ -122,10 +119,7 @@ const checkModel = async () => {
                 { value: 'light-stone', label: t('lightStone') },
               ]" class="mt-2 w-full" />
             </label>
-            <label class="mt-5 flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300">
-              <span><span class="block font-medium">{{ t('compactSidebar') }}</span><span class="mt-1 block text-xs text-surface-500">{{ t('compactSidebarDescription') }}</span></span>
-              <input v-model="settings.compactSidebar" type="checkbox" class="h-5 w-5 shrink-0 accent-primary-600">
-            </label>
+            <UCheckbox v-model="settings.compactSidebar" :label="t('compactSidebar')" :aria-label="t('compactSidebar')" :description="t('compactSidebarDescription')" indicator="end" size="lg" class="mt-5 flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
             <ThemeCustomizer />
           </section>
         </template>
@@ -139,14 +133,8 @@ const checkModel = async () => {
               <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('filesPerPage') }}
                 <AppDropdown v-model="settings.pageSize" :options="[25, 50, 100].map(value => ({ value, label: String(value) }))" class="mt-2 w-full" />
               </label>
-              <label class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">
-                <span><span class="block font-medium">{{ t('showThumbnails') }}</span><span class="mt-1 block text-xs text-surface-500">{{ t('showThumbnailsDescription') }}</span></span>
-                <input v-model="settings.showThumbnails" type="checkbox" class="h-5 w-5 shrink-0 accent-primary-600">
-              </label>
-              <label class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">
-                <span><span class="block font-medium">{{ t('showSystemFiles') }}</span><span class="mt-1 block text-xs leading-relaxed text-surface-500">{{ t('showSystemFilesDescription') }}</span></span>
-                <input v-model="settings.showSystemFiles" type="checkbox" class="h-5 w-5 shrink-0 accent-primary-600">
-              </label>
+              <UCheckbox v-model="settings.showThumbnails" :label="t('showThumbnails')" :aria-label="t('showThumbnails')" :description="t('showThumbnailsDescription')" indicator="end" size="lg" class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
+              <UCheckbox v-model="settings.showSystemFiles" :label="t('showSystemFiles')" :aria-label="t('showSystemFiles')" :description="t('showSystemFilesDescription')" indicator="end" size="lg" class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
             </div>
           </section>
           <section class="mt-5 rounded-2xl border border-surface-200 bg-white p-4 sm:p-6 dark:border-surface-800 dark:bg-surface-900">
@@ -168,7 +156,7 @@ const checkModel = async () => {
                   <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">{{ t('localModelTitle') }}</h3>
                   <p class="mt-1 text-xs text-surface-500">{{ settings.localModel.provider === 'ollama' ? t('ollamaModelDescription') : t('localModelDescription') }}</p>
                 </div>
-                <input v-model="settings.localModel.enabled" type="checkbox" class="mt-1 h-5 w-5 accent-primary-600" :aria-label="t('localModelTitle')">
+                <UCheckbox v-model="settings.localModel.enabled" size="lg" class="mt-1" :aria-label="t('localModelTitle')" />
               </div>
               <div class="mt-5 grid gap-4 sm:grid-cols-2" :class="!settings.localModel.enabled && 'opacity-50'">
                 <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('localBackend') }}

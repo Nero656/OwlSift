@@ -125,7 +125,16 @@ electron_1.app.whenReady().then(() => {
     electron_1.ipcMain.handle('files:search', (_event, query) => sqlite_1.dbManager.search(query));
     electron_1.ipcMain.handle('files:search-documents', (_event, query) => sqlite_1.dbManager.search(query, 10000));
     electron_1.ipcMain.handle('files:list-scan-drives', () => sqlite_1.dbManager.listScanDrives());
-    electron_1.ipcMain.handle('files:scan-os-documents', (_event, data) => sqlite_1.dbManager.scanOsDocuments(data.drivePath, data.extensions));
+    electron_1.ipcMain.handle('files:scan-os-documents', (_event, data) => sqlite_1.dbManager.scanOsDocuments(data.drivePath, data.extensions, data.folderPaths, data.resume));
+    electron_1.ipcMain.handle('files:document-scan-status', () => sqlite_1.dbManager.documentScanStatus());
+    electron_1.ipcMain.handle('files:stop-document-scan', () => sqlite_1.dbManager.stopDocumentScan());
+    electron_1.ipcMain.handle('files:choose-scan-folders', async (_event, data) => {
+        const [root] = await sqlite_1.dbManager.documentScanRoots(data.drivePath);
+        const result = await electron_1.dialog.showOpenDialog(win, { defaultPath: root, properties: ['openDirectory', 'multiSelections'] });
+        if (result.canceled || !result.filePaths.length)
+            return null;
+        return sqlite_1.dbManager.documentScanRoots(data.drivePath, result.filePaths);
+    });
     electron_1.ipcMain.handle('files:choose-and-index', async (_event, data = {}) => {
         const result = await electron_1.dialog.showOpenDialog(win, {
             properties: ['openDirectory']
@@ -134,39 +143,39 @@ electron_1.app.whenReady().then(() => {
             return null;
         return sqlite_1.dbManager.indexFolder(result.filePaths[0], data.maxFiles);
     });
-    electron_1.ipcMain.handle('files:import-drop', (_event, data) => {
-        if (!path_1.default.isAbsolute(data.filePath) || !node_fs_1.default.statSync(data.filePath).isFile())
+    electron_1.ipcMain.handle('folders:default-location', () => electron_1.app.getPath('desktop'));
+    electron_1.ipcMain.handle('folders:choose-parent', async () => {
+        const result = await electron_1.dialog.showOpenDialog(win, { properties: ['openDirectory'], defaultPath: electron_1.app.getPath('desktop') });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+    });
+    electron_1.ipcMain.handle('folders:create', (_event, data) => sqlite_1.dbManager.createWorkspaceFolder(data.parentPath, data.name));
+    electron_1.ipcMain.handle('files:transfer-workspace', (_event, data) => sqlite_1.dbManager.transferWorkspaceFiles(data));
+    electron_1.ipcMain.handle('files:import-drop', async (_event, data) => {
+        if (!path_1.default.isAbsolute(data.filePath))
             throw new Error('Invalid file');
-        if (!sqlite_1.dbManager.isFileVisible(data.filePath))
-            throw new Error('System and hidden files are excluded by the current settings');
-        let target = data.filePath;
-        if (data.folderPath) {
-            const folder = sqlite_1.dbManager.listFolders().find(folder => folder.path === data.folderPath);
-            if (!folder || !node_fs_1.default.statSync(folder.path).isDirectory())
-                throw new Error('Folder not found');
-            const limit = Math.max(1, Math.min(5000, Number(data.maxFiles) || 1000));
-            if (folder.count >= limit)
-                throw new Error('Folder limit reached');
-            target = path_1.default.join(folder.path, path_1.default.basename(data.filePath));
-            if (path_1.default.resolve(target) !== path_1.default.resolve(data.filePath)) {
-                const ext = path_1.default.extname(target), base = path_1.default.basename(target, ext);
-                let suffix = 1;
-                while (node_fs_1.default.existsSync(target))
-                    target = path_1.default.join(folder.path, base + ' (' + suffix++ + ')' + ext);
-                node_fs_1.default.copyFileSync(data.filePath, target, node_fs_1.default.constants.COPYFILE_EXCL);
-            }
-        }
-        sqlite_1.dbManager.indexSingleFile(target, data.folderPath);
-        return target;
+        if (data.folderPath)
+            return sqlite_1.dbManager.importFileToWorkspace(data.filePath, data.folderPath, data.maxFiles);
+        sqlite_1.dbManager.indexSingleFile(data.filePath);
+        return data.filePath;
     });
     electron_1.ipcMain.handle('files:choose-and-index-file', async (_event, data = {}) => {
-        const result = await electron_1.dialog.showOpenDialog(win, {
-            properties: ['openFile'],
-            defaultPath: data.folderPath,
-        });
-        if (result.canceled || !result.filePaths[0])
+        const result = await electron_1.dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], defaultPath: data.folderPath });
+        if (result.canceled || !result.filePaths.length)
             return null;
-        return sqlite_1.dbManager.indexSingleFile(result.filePaths[0], data.folderPath);
+        let indexedCount = 0, skippedCount = 0;
+        for (const source of result.filePaths) {
+            try {
+                if (data.folderPath)
+                    await sqlite_1.dbManager.importFileToWorkspace(source, data.folderPath, data.maxFiles);
+                else
+                    sqlite_1.dbManager.indexSingleFile(source);
+                indexedCount++;
+            }
+            catch {
+                skippedCount++;
+            }
+        }
+        return { folderPath: data.folderPath ?? path_1.default.dirname(result.filePaths[0]), indexedCount, skippedCount, limit: data.maxFiles ?? 1000 };
     });
     electron_1.ipcMain.handle('files:create-in-folder', (_event, data) => {
         return sqlite_1.dbManager.createFileInFolder(data.folderPath, data.fileName, data.content ?? '', data.bytes ? Buffer.from(data.bytes) : undefined);

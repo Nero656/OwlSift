@@ -3,12 +3,13 @@ import type { LocalFile } from '~/types/file'
 
 const props = withDefaults(defineProps<{ tag?: string; folderPath?: string }>(), { tag: 'div' })
 const emit = defineEmits<{ imported: [files: LocalFile[]] }>()
-const { importDroppedFiles } = useFiles()
+const { importDroppedFiles, openFileTransfer } = useFiles()
 const { t } = useLanguage()
 const depth = ref(0)
 const importing = ref(false)
 const notice = ref('')
-const hasFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('Files')
+const hasInternalFiles = (event: DragEvent) => Array.from(event.dataTransfer?.types ?? []).includes('application/x-owlsift-files')
+const hasFiles = (event: DragEvent) => hasInternalFiles(event) || Array.from(event.dataTransfer?.types ?? []).includes('Files')
 const enter = (event: DragEvent) => {
   if (!hasFiles(event)) return
   event.preventDefault()
@@ -19,7 +20,7 @@ const over = (event: DragEvent) => {
   if (!hasFiles(event)) return
   event.preventDefault()
   event.stopPropagation()
-  if (event.dataTransfer) event.dataTransfer.dropEffect = importing.value ? 'none' : 'copy'
+  if (event.dataTransfer) event.dataTransfer.dropEffect = importing.value ? 'none' : hasInternalFiles(event) && !event.ctrlKey ? 'move' : 'copy'
 }
 const leave = (event: DragEvent) => {
   event.stopPropagation()
@@ -33,6 +34,13 @@ const drop = async (event: DragEvent) => {
   if (importing.value) return
   const transfer = event.dataTransfer
   if (!transfer) return
+  if (hasInternalFiles(event)) {
+    try {
+      const ids: unknown = JSON.parse(transfer.getData('application/x-owlsift-files'))
+      if (Array.isArray(ids) && ids.every(id => Number.isInteger(id))) openFileTransfer(ids,event.ctrlKey || event.metaKey ? 'copy' : 'move',props.folderPath)
+    } catch { notice.value = t('workspaceTransferError') }
+    return
+  }
   // Capture File objects before the browser clears the drag data store.
   const sources = Array.from(transfer.files)
   const directories = Array.from(transfer.items).filter(item => item.webkitGetAsEntry?.()?.isDirectory).length

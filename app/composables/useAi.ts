@@ -342,7 +342,7 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
     const requestedOutputFolder = fileCreationRequest?.folderPath || outputFolder || (explicitFileCreation ? (() => {
       const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/$/, '')
       const common = selected.length ? folders.value.filter(folder => selected.every(item => normalize(item.path).startsWith(normalize(folder.path) + '/'))).sort((a, b) => b.path.length - a.path.length)[0] : undefined
-      return common?.path ?? folders.value.find(folder => folder.name === selectedFolder.value)?.path ?? folders.value[0]?.path
+      return common?.path ?? folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? folders.value[0]?.path
     })() : undefined)
     const oneShotCreationGrant = Boolean(fileCreationRequest) || (explicitFileCreation && !outputFolder && Boolean(requestedOutputFolder))
     const editableIds = editAccess?.() ? selected.filter(canEditAiFile).map(file => file.id) : []

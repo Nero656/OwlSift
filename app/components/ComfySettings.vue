@@ -39,7 +39,7 @@ const importWorkflow = async (event: Event) => {
 </script>
 <template>
   <section class="rounded-2xl border border-surface-200 bg-white p-4 dark:border-surface-800 dark:bg-surface-900 sm:p-6">
-    <label class="flex items-center justify-between gap-3 text-sm font-semibold"><span>{{ t('comfyEnable') }}</span><input v-model="config.enabled" type="checkbox" class="size-5 shrink-0 accent-primary-600"></label>
+    <UCheckbox v-model="config.enabled" :label="t('comfyEnable')" :aria-label="t('comfyEnable')" indicator="end" size="lg" :ui="{ wrapper: 'flex-1', label: 'font-semibold' }" />
     <p class="mt-2 text-xs text-surface-500">{{ t('comfySeparateProviders') }}</p>
     <div class="mt-5 grid gap-4 sm:grid-cols-2">
       <label class="text-sm">{{ t('comfyEndpoint') }}<input v-model.trim="config.endpoint" type="url" placeholder="http://localhost:8188" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"></label>
@@ -73,7 +73,7 @@ const importWorkflow = async (event: Event) => {
         <p v-if="importError" class="text-xs text-rose-500">{{ importError }}</p>
       </template>
       <ComfyWorkflowStatus />
-      <label class="flex items-center justify-between gap-3 text-sm"><span>{{ t('comfyLocalOnly') }}<span class="mt-1 block text-xs text-surface-500">{{ t('comfyLocalOnlyHint') }}</span></span><input v-model="config.localOnly" type="checkbox" class="size-5 shrink-0 accent-primary-600"></label>
+      <UCheckbox v-model="config.localOnly" :label="t('comfyLocalOnly')" :aria-label="t('comfyLocalOnly')" :description="t('comfyLocalOnlyHint')" indicator="end" size="lg" :ui="{ wrapper: 'flex-1', description: 'text-xs' }" />
       <p class="text-xs text-surface-500">{{ t('comfyAuditHint') }}</p>
       <label v-if="!config.localOnly" class="block text-sm">{{ t('comfyCloudKey') }}<input v-model.trim="config.cloudApiKey" type="password" autocomplete="off" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2 dark:border-surface-700 dark:bg-surface-800"><span class="mt-1 block text-xs text-surface-500">{{ t('comfyCloudKeyHint') }}</span></label>
       <p class="text-xs leading-relaxed text-surface-500">{{ t('comfyMediaSearchHint') }}</p>

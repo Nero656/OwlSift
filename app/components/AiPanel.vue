@@ -383,7 +383,7 @@ const confirmDeleteFile = async () => {
       </div>
 
 
-    <div class="shrink-0 px-2 py-1"><AiOutputSettings v-model="outputFolder" v-model:allow-edits="allowFileEdits" :selected-files="ragFiles" /></div>
+    <p class="shrink-0 px-2 py-1 text-xs text-surface-500">{{ t('selectedContextFiles') }} <strong class="text-surface-700 dark:text-surface-200">{{ ragFiles.length }}</strong></p>
 
     <!-- CHAT -->
 
