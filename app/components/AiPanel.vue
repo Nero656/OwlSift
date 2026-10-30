@@ -468,7 +468,7 @@ const confirmDeleteFile = async () => {
           <span v-if="message.mediaGeneration" class="rounded border border-current/20 px-1.5 py-0.5" :class="message.mediaGeneration.execution === 'local' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">{{ t(message.mediaGeneration.execution === 'local' ? 'comfyLocalWorkflow' : message.mediaGeneration.execution === 'cloud' ? 'comfyCloudWorkflow' : 'comfyUnknownWorkflow') }}</span>
           </div>
 
-          <ChatMessageContent :text="message.text" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
+          <ChatMessageContent :text="message.text" :pending-file="message.pendingEditId ? pendingFileEdits[message.pendingEditId] : undefined" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
           <div v-if="message.sender === 'user' && message.attachments?.length" class="mt-2 flex min-w-0 flex-wrap gap-1.5">
             <ChatFileAttachment v-for="file in message.attachments" :key="file.path ?? file.id" :file="file" :label="file.name" />
           </div>

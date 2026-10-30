@@ -7,7 +7,8 @@ const props = withDefaults(defineProps<{
   options: Array<{ label: string; value: T; disabled?: boolean }>
   placeholder?: string
   disabled?: boolean
-}>(), { placeholder: '', disabled: false })
+  side?: 'top' | 'bottom'
+}>(), { placeholder: '', disabled: false, side: 'bottom' })
 const { t } = useLanguage()
 const attrs = useAttrs()
 const root = ref<HTMLElement | null>(null)
@@ -33,7 +34,7 @@ onMounted(() => {
 <template>
   <div ref="root" :class="['min-w-0', attrs.class]">
     <UDropdownMenu v-slot="{ open }" :items="items" :disabled="disabled || !options.length"
-      :portal="portal" :modal="false" :content="{ align: 'start', sideOffset: 6, collisionPadding: 12 }"
+      :portal="portal" :modal="false" :content="{ align: 'start', side: props.side, sideOffset: 6, collisionPadding: 12, avoidCollisions: true }"
       :filter="options.length > 10 ? { placeholder: t('search') } : false"
       :ui="{ content: 'min-w-[var(--reka-dropdown-menu-trigger-width)] max-w-[min(28rem,calc(100vw-2rem))] max-h-[min(20rem,var(--reka-dropdown-menu-content-available-height))] overflow-y-auto z-[150]', item: 'cursor-pointer', itemLabel: 'break-words whitespace-normal' }">
       <UButton v-bind="triggerAttrs" type="button" color="neutral" variant="outline" size="sm"

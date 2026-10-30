@@ -79,7 +79,7 @@ watch(() => props.autoStart, async enabled => {
   selectedWorkflow.value = settings.value.comfy.workflowMode
   await nextTick()
   try { await generateFromChat(props.initialPrompt, undefined, props.chatKey, props.refineInitialPrompt) }
-  catch (issue) { error.value = errorText(issue) }
+  catch (issue) { error.value = issue instanceof Error ? issue.message : String(issue) }
 }, { immediate: true })
 defineExpose({ generateFromChat, stopGeneration: stop })
 </script>

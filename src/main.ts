@@ -33,6 +33,7 @@ function createWindow(): void {
     win = new BrowserWindow({
         show: !app.commandLine.hasSwitch('smoke-test'),
         title: 'OwlSift',
+        icon: path.join(__dirname, 'icons', process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
         width: 1280,
         height: 800,
         webPreferences: {

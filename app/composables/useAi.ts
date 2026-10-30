@@ -1,5 +1,7 @@
 import { modelContentToText } from '../utils/chatContent'
 import { canEditAiFile, parseAiArtifacts } from '../utils/aiArtifacts'
+import { parseAiEditEnvelope } from '../utils/aiEditContent'
+import { stripGeneratedFileSummary } from '../utils/generatedFileSummary'
 import { ModelApiError, normalizeApiKey, readModelApiError } from '../utils/aiHttp'
 import { contextFiles, contextKey, type FileContext } from '../utils/aiContext'
 import { extractDocumentText } from '../utils/documents'
@@ -389,7 +391,12 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       if (!explicitFileCreation && requestsDocumentEdit(trimmed) && namesDocumentToEdit(trimmed) && candidateFiles.length === 1 && !plan.edits.length) {
         const file = candidateFiles[0]!
         const block = extractCodeFence(reply, file.extension)
-        const pendingContent = refusedEdit?.id === file.id ? refusedEdit.content : block?.[2]?.trim()
+        const fallbackContent = block?.[2]?.trim()
+        const pendingContent = refusedEdit?.id === file.id
+          ? refusedEdit.content
+          : fallbackContent !== undefined
+            ? parseAiEditEnvelope(fallbackContent, file.id, file.extension) ?? fallbackContent
+            : parseAiEditEnvelope(reply.trim(), file.id, file.extension)
         if (pendingContent) {
           const pendingId = globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
           pendingFileEdits.value[pendingId] = {
@@ -430,11 +437,9 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       }
       if (created.length || edited.length) {
         const responseText = recoveredCodeBlock
-            ? reply.replace(recoveredCodeBlock, '').trim() || t('createdDocuments')
-          : reply.replace(/```(?:localmind-file|owlsift-edit)\s*[\s\S]*?```/g, '').trim() || t(edited.length ? 'editedDocuments' : 'createdDocuments')
-        const outputFiles = [...edited, ...created]
-        const fileLinks = outputFiles.map(file => `[${file.name.replace(/[\[\]]/g, '')}](owlsift-file:${file.id})`).join(' · ')
-        message.text = `${responseText}\n\n${t(edited.length ? 'editedDocuments' : 'createdDocuments')}: ${fileLinks}`
+            ? reply.replace(recoveredCodeBlock, '').trim()
+          : reply.replace(/```(?:localmind-file|owlsift-edit)\s*[\s\S]*?```/g, '').trim()
+        message.text = responseText
       }
       // Mutate the reactive stored message so saved chats and the visible list update.
       Object.assign(savedMessage, message)
@@ -469,8 +474,7 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       // The user's confirmation authorizes this exact file and content for this one write.
       const updated = await editIndexedFile(pending.id, pending.content, pending.expectedMtime, () => true)
       message.editedFiles = [...(message.editedFiles ?? []), { id: updated.id, name: updated.name, path: updated.path, extension: updated.extension }]
-      const label = updated.name.replace(/[\[\]]/g, '')
-      message.text += `\n\n${t('editedDocuments')}: [${label}](owlsift-file:${updated.id})`
+      message.text = stripGeneratedFileSummary(message.text, [...(message.createdFiles ?? []), ...message.editedFiles])
       delete pendingFileEdits.value[pendingId!]
       delete message.pendingEditId
     } catch (error) {

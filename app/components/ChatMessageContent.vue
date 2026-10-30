@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import type { ChatFileReference } from '~/types/file'
 import { chatContentParts, safeChatUrl } from '~/utils/chatContent'
-const props = withDefaults(defineProps<{ text: string; references?: ChatFileReference[] }>(), { references: () => [] })
+import { stripGeneratedFileSummary } from '~/utils/generatedFileSummary'
+const props = withDefaults(defineProps<{ text: string; references?: ChatFileReference[]; pendingFile?: ChatFileReference }>(), { references: () => [] })
+const previewReferences = computed(() => [...props.references, ...(props.pendingFile ? [props.pendingFile] : [])])
 const { files } = useFiles()
 const { t } = useLanguage()
 const failedImages = ref(new Set<string>())
@@ -18,9 +20,9 @@ const localFile = (url: string): ChatFileReference | undefined => {
   const exact = files.value.find(file => normalize(file.path) === value)
   if (exact) return exact
   const name = value.split('/').pop()
-  return props.references.find(file => file.name === name) ?? (!value.includes('/') && !value.includes(':') ? files.value.find(file => file.name === value) : undefined)
+  return previewReferences.value.find(file => file.name === name) ?? (!value.includes('/') && !value.includes(':') ? files.value.find(file => file.name === value) : undefined)
 }
-const parts = computed(() => chatContentParts(props.text).map(part => {
+const parts = computed(() => chatContentParts(stripGeneratedFileSummary(props.text, previewReferences.value), previewReferences.value).map(part => {
   if (part.kind !== 'link' && part.kind !== 'image') return { ...part, file: undefined, href: undefined }
   const file = localFile(part.url)
   return { ...part, file, href: file ? undefined : safeChatUrl(part.url, part.kind === 'image') }

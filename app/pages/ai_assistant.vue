@@ -20,6 +20,7 @@ const fileCreationFolder = ref<string | null>(null)
 const fileCreationError = ref('')
 const fileCreationSubmitting = ref(false)
 const imageGenerationPrompt = ref('')
+const imageGenerationAutoStart = ref(false)
 const chatScroll = ref<HTMLElement | null>(null)
 const documentAttachments = ref<{ open: () => void; openComputerPicker: () => void } | null>(null)
 const editFileSelectionPending = ref(false)
@@ -140,13 +141,8 @@ const deleteMessage = (index: number) => {
 }
 const activateImageCommand = () => {
   const current = question.value.trim()
-  if (current) {
-    openImageGeneration(current, !explicitImageIntent(current) && imageFollowUp(current))
-    question.value = ''
-  } else {
-    question.value = t('createImageCommandPrompt')
-  }
-  void nextTick(() => document.querySelector<HTMLTextAreaElement>('[data-chat-composer] textarea, textarea[data-chat-composer]')?.focus())
+  openImageGeneration(current, Boolean(current) && !explicitImageIntent(current) && imageFollowUp(current), false)
+  if (comfyModalOpen.value) question.value = ''
 }
 const focusComposerInput = () => void nextTick(() => document.querySelector<HTMLTextAreaElement>('[data-chat-composer] textarea, textarea[data-chat-composer]')?.focus())
 const activateEditFileCommand = () => {
@@ -201,9 +197,10 @@ const isImageGenerationRequest = (text: string) => {
   const hasRecentImageRequest = recent.some(message => message.sender === 'user' && explicitImageIntent(message.text))
   return (hasRecentImage || hasRecentImageRequest) && imageFollowUp(text)
 }
-const openImageGeneration = (request: string, refineWithContext = false) => {
+const openImageGeneration = (request: string, refineWithContext = false, autoStart = true) => {
   const prompt = request.trim()
-  if (!prompt || isThinking.value || generatingImage.value) return
+  if (isThinking.value || generatingImage.value) return
+  imageGenerationAutoStart.value = autoStart && Boolean(prompt)
   imageGenerationPrompt.value = prompt
   imageGenerationNeedsRefinement.value = refineWithContext
   imageGenerationContext.value = messages.value.slice(-8).map(message => `${message.sender === 'user' ? 'User' : 'Assistant'}: ${message.text}`).join('\n').slice(-12000)
@@ -308,7 +305,7 @@ const connectModels = async () => {
           {{ message.provider === 'comfy' ? 'Comfy Desktop' : settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
           <span v-if="message.mediaGeneration" class="rounded border border-current/20 px-1.5 py-0.5" :class="message.mediaGeneration.execution === 'local' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">{{ t(message.mediaGeneration.execution === 'local' ? 'comfyLocalWorkflow' : message.mediaGeneration.execution === 'cloud' ? 'comfyCloudWorkflow' : 'comfyUnknownWorkflow') }}</span>
         </div>
-        <ChatMessageContent :text="message.text" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
+        <ChatMessageContent :text="message.text" :pending-file="message.pendingEditId ? pendingFileEdits[message.pendingEditId] : undefined" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
         <div v-if="message.sender === 'user' && message.attachments?.length" class="mt-2 flex min-w-0 flex-wrap gap-1.5">
           <ChatFileAttachment v-for="file in message.attachments" :key="file.path ?? file.id" :file="file" :label="file.name" />
         </div>
@@ -472,7 +469,7 @@ const connectModels = async () => {
             <button type="button" class="rounded-lg p-2 text-surface-500 transition hover:bg-surface-100 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-surface-800" :aria-label="t('close')" :disabled="generatingImage" @click="comfyModalOpen = false"><Icon name="lucide:x" size="18" /></button>
           </header>
           <div class="min-h-0 overflow-y-auto p-3 sm:p-4">
-            <ComfyImagePanel modal auto-start :refine-initial-prompt="imageGenerationNeedsRefinement" :initial-prompt="imageGenerationPrompt" :conversation-context="imageGenerationContext" :chat-key="activeChatId ?? 'general'" @generation-started="comfyModalOpen = false" />
+            <ComfyImagePanel modal :auto-start="imageGenerationAutoStart" :refine-initial-prompt="imageGenerationNeedsRefinement" :initial-prompt="imageGenerationPrompt" :conversation-context="imageGenerationContext" :chat-key="activeChatId ?? 'general'" @generation-started="comfyModalOpen = false" />
           </div>
         </section>
       </div>

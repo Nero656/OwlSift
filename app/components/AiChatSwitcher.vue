@@ -61,7 +61,7 @@ const chatActions = (chat: AiChatListItem) => [[
               <span v-if="chat.fileCount" class="mt-1 block truncate text-[10px] opacity-55">{{ t('selectedContextFiles') }} {{ chat.fileCount }}</span>
             </span>
           </button>
-          <UDropdownMenu :items="chatActions(chat)" :content="{ align: 'end', sideOffset: 4 }" :ui="{ content: 'z-[150]', item: 'cursor-pointer' }">
+          <UDropdownMenu :items="chatActions(chat)" :content="{ align: 'end', side: 'bottom', sideOffset: 4, collisionPadding: 12, avoidCollisions: true }" :ui="{ content: 'z-[150]', item: 'cursor-pointer' }">
             <UButton type="button" icon="i-lucide-ellipsis" size="xs" color="neutral" variant="ghost" class="shrink-0 opacity-60 hover:opacity-100" :aria-label="t('chatActions')" :title="t('chatActions')" @click.stop />
           </UDropdownMenu>
         </template>

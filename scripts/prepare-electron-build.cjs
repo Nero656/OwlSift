@@ -8,5 +8,6 @@ const target = path.join(root, 'electron-build')
 if (fs.existsSync(target) && fs.lstatSync(target).isSymbolicLink()) fs.unlinkSync(target)
 else fs.rmSync(target, { recursive: true, force: true })
 fs.cpSync(source, target, { recursive: true })
+fs.cpSync(path.join(root, 'assets', 'icons'), path.join(target, 'icons'), { recursive: true })
 
 console.log(`Prepared Electron files in ${target}`)
