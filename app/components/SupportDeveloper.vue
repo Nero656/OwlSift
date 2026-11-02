@@ -7,6 +7,7 @@ const dialog = ref<HTMLDialogElement | null>(null)
 const openError = ref('')
 const donationUrl = 'https://www.donationalerts.com/r/nero_656'
 const boostyUrl = 'https://boosty.to/nero_656/donate'
+const trybitUrl = 'https://donate.trybit.com/AIE59TOI'
 const openDialog = () => {
   openError.value = ''
   dialog.value?.showModal()
@@ -45,9 +46,12 @@ const openPayment = async (event: MouseEvent, url: string) => {
           <a :href="boostyUrl" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-xl border border-surface-300 px-4 py-3 text-sm font-medium text-surface-800 hover:bg-surface-100 dark:border-surface-700 dark:text-surface-100 dark:hover:bg-surface-800" @click="openPayment($event, boostyUrl)">
             <Icon name="lucide:heart-handshake" size="16" />{{ t('boostyOption') }}
           </a>
+          <a :href="trybitUrl" target="_blank" rel="noopener noreferrer" class="flex items-center justify-center gap-2 rounded-xl border border-surface-300 px-4 py-3 text-sm font-medium text-surface-800 hover:bg-surface-100 dark:border-surface-700 dark:text-surface-100 dark:hover:bg-surface-800" @click="openPayment($event, trybitUrl)">
+            <Icon name="lucide:external-link" size="16" />{{ t('trybitOption') }}
+          </a>
         </div>
         <p v-if="openError" role="alert" class="mt-2 text-xs text-rose-500">{{ openError }}</p>
-        <div class="mt-3 space-y-1 break-all text-center text-xs text-surface-500"><p>DonationAlerts: {{ donationUrl }}</p><p>Boosty: {{ boostyUrl }}</p></div>
+        <div class="mt-3 space-y-1 break-all text-center text-xs text-surface-500"><p>DonationAlerts: {{ donationUrl }}</p><p>Boosty: {{ boostyUrl }}</p><p>Trybit: {{ trybitUrl }}</p></div>
       </dialog>
     </Teleport>
   </div>

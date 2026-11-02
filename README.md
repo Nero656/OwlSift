@@ -1,5 +1,9 @@
 # OwlSift
 
+## Support development
+
+If you enjoy OwlSift, you can [support its development via Trybit](https://donate.trybit.com/AIE59TOI). Thank you for your support!
+
 Look at the [Nuxt documentation](https://nuxt.com/docs/getting-started/introduction) to learn more.
 
 ## Setup
