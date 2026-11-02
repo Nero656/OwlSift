@@ -10,18 +10,7 @@ until [ -f "package.json" ]; do
   sleep 2
 done
 
-# Ставим зависимости, если их нет
-if [ ! -x "node_modules/.bin/electron" ]; then
-  echo "→ Устанавливаем зависимости Electron (может занять пару минут)..."
-  npm install
-fi
-
-# Проверяем и устанавливаем SQLite + Electron Rebuild
-if [ ! -d "node_modules/better-sqlite3" ]; then
-  echo "→ Устанавливаем better-sqlite3 и @electron/rebuild..."
-  npm install better-sqlite3
-  npm install -D @types/better-sqlite3 @electron/rebuild
-fi
+node /app/scripts/sync-dependencies.cjs electron
 
 echo "→ Пересобираем C++ бинарники SQLite под V8 ABI Electron..."
 npx @electron/rebuild -f -w better-sqlite3

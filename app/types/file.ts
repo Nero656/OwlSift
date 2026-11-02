@@ -10,6 +10,9 @@ export interface LocalFile {
     snippet: string
     summary: string
     note: string
+    content?: string
+    contentError?: string
+    thumbnail?: string
 }
 
 export interface IndexedFolder {
@@ -18,7 +21,21 @@ export interface IndexedFolder {
     count: number
 }
 
+export interface ChatFileReference {
+    id: number
+    name: string
+    path?: string
+    extension?: string
+}
+
 export interface ChatMessage {
+    createdAt?: number
+    provider?: 'comfy'
+    mediaGeneration?: { provider: 'comfy'; jobId: string; kind: 'image' | 'audio' | 'video'; execution: 'local' | 'cloud' | 'unverified'; prompt?: string }
     sender: 'user' | 'ai'
     text: string
+    attachments?: ChatFileReference[]
+    editedFiles?: ChatFileReference[]
+    createdFiles?: ChatFileReference[]
+    pendingEditId?: string
 }

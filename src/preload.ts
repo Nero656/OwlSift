@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, IpcRendererEvent, webUtils } from 'electron';
 import type { IElectronAPI } from './types/global';
 
 const allowedSendChannels = [
@@ -8,20 +8,42 @@ const allowedSendChannels = [
 ] as const;
 
 const allowedInvokeChannels = [
+    'comfy:request',
+    'app:open-donation',
+    'app:open-ai-doc',
+    'app:open-external',
+    'files:import-drop',
     'app:get-version',
     'db:get-status',
     'files:list',
+    'files:set-system-visibility',
     'files:add-tag',
     'files:remove-tag',
     'files:set-note',
     'files:open',
+    'files:rename',
     'files:show-in-folder',
     'files:delete',
     'files:delete-from-disk',
     'files:get-image-preview',
     'files:folders',
     'files:search',
+    'files:search-documents',
+    'files:list-scan-drives',
+    'files:scan-os-documents',
+    'files:stop-document-scan',
+    'files:document-scan-status',
+    'files:choose-scan-folders',
     'files:choose-and-index',
+    'files:choose-and-index-file',
+    'files:create-in-folder',
+    'files:edit-content',
+    'files:get-content',
+    'files:get-bytes',
+    'folders:default-location',
+    'folders:choose-parent',
+    'folders:create',
+    'files:transfer-workspace',
     'folders:remove-from-index'
 ] as const;
 
@@ -35,6 +57,7 @@ type OnChannel = typeof allowedOnChannels[number];
 
 const electronAPI: IElectronAPI = {
     platform: process.platform,
+    getPathForFile: (file: File) => webUtils.getPathForFile(file),
 
     send(channel: string, data?: unknown): void {
         if (allowedSendChannels.includes(channel as SendChannel)) {

@@ -5,6 +5,8 @@
 .nitro
 .cache
 dist
+dist-previous-build
+.electron-tsc
 
 # Node dependencies
 node_modules
@@ -27,3 +29,9 @@ docs_test
 
 pnpm-lock.yaml
 pnpm-workspace.yaml
+# Generated release seed
+build-resources/
+
+release
+
+.electron-build-stale
