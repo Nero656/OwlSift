@@ -8,15 +8,20 @@ const target = ref('')
 const mode = ref<WorkspaceTransferMode>('copy')
 const busy = ref(false)
 const error = ref('')
-const selected = computed(() => files.value.filter(file => fileTransferRequest.value?.fileIds.includes(file.id)))
+const previousRequest = shallowRef<typeof fileTransferRequest.value>(null)
+const selected = computed(() => {
+  const ids = new Set((fileTransferRequest.value ?? previousRequest.value)?.fileIds)
+  return ids.size ? files.value.filter(file => ids.has(file.id)) : []
+})
 watch(fileTransferRequest, async request => {
   if (!request) { dialog.value?.close(); return }
+  previousRequest.value = request
   mode.value = request.mode
   target.value = request.targetFolderPath ?? ''
   error.value = ''
   await nextTick()
   dialog.value?.showModal()
-})
+}, { immediate: true })
 const close = () => { if (!busy.value) fileTransferRequest.value = null }
 const submit = async () => {
   const request = fileTransferRequest.value
@@ -35,7 +40,7 @@ const submit = async () => {
 </script>
 <template>
   <Teleport to="body">
-    <dialog ref="dialog" class="m-auto w-[calc(100%-2rem)] max-w-lg rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100" aria-labelledby="workspace-transfer-title" @cancel="busy ? $event.preventDefault() : close()" @close="close">
+    <dialog ref="dialog" class="owl-native-dialog m-auto w-[calc(100%-2rem)] max-w-lg rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100" aria-labelledby="workspace-transfer-title" @cancel="busy ? $event.preventDefault() : close()" @close="close">
       <h2 id="workspace-transfer-title" class="text-base font-semibold">{{ t('workspaceTransferTitle') }}</h2>
       <p class="mt-2 text-xs text-surface-500">{{ t('selectedDocuments') }} {{ selected.length }}</p>
       <ul class="my-3 max-h-32 overflow-y-auto text-xs"><li v-for="file in selected" :key="file.id" class="truncate py-1">{{ file.name }}</li></ul>

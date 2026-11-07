@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import type { LocalFile } from '~/types/file'
+import type { FileView } from '~/utils/fileViews'
+import { imageFileExtensions } from '~/utils/fileTypeGroups'
+import { readFileThumbnail } from '~/utils/fileThumbnailQueue'
 
-const props = defineProps<{ file: LocalFile; active?: boolean; layout?: 'list' | 'grid'; selectable?: boolean; selected?: boolean; hideSummary?: boolean }>()
+const props = defineProps<{ file: LocalFile; active?: boolean; layout?: FileView; searchQuery?: string; selectable?: boolean; selected?: boolean; hideSummary?: boolean }>()
 const { t } = useLanguage()
+const compact = computed(() => props.layout === 'compact')
 const { settings } = useSettings()
 const { openIndexedFile, selectFile, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, openFileTransfer, selectedFileIds, folders } = useFiles()
 const emit = defineEmits<{ select: [file: LocalFile]; summary: [file: LocalFile]; toggle: [file: LocalFile] }>()
@@ -16,6 +20,11 @@ const startDrag = (event: DragEvent) => {
 const renameDialogOpen = ref(false)
 const renameValue = ref('')
 const renameBusy = ref(false)
+const deleteConfirmOpen = ref(false)
+const mountDeleteDialog = computed<boolean>(opened => Boolean(opened || deleteConfirmOpen.value))
+const deleteBusy = ref(false)
+const toast = useToast()
+const deleteMessage = computed(() => t(desktop.value ? 'deleteFileConfirm' : 'deleteBrowserFileConfirm').replace('{name}', props.file.name))
 const contextItems = computed(() => [
   { label: t('openFile'), icon: 'lucide:external-link', onSelect: () => void openIndexedFile(props.file.id).catch(showFileActionError) },
   { label: t('previewFile'), icon: 'lucide:eye', onSelect: (): void => { selectFile(props.file) } },
@@ -26,11 +35,11 @@ const contextItems = computed(() => [
     { label: t('workspaceMoveTo'), icon: 'lucide:folder-input', disabled: !folders.value.length, onSelect: () => openFileTransfer(transferIds(),'move') },
   ] : []),
   { label: t('renameFile'), icon: 'lucide:pencil', onSelect: () => void renameFile() },
-  { label: t('deleteFile'), icon: 'lucide:trash-2', color: 'error' as const, onSelect: (): void => { void deleteFile() } },
+  { label: t('deleteFile'), icon: 'lucide:trash-2', color: 'error' as const, onSelect: () => { deleteConfirmOpen.value = true } },
 ])
 
 function showFileActionError(error: unknown) {
-  if (import.meta.client) window.alert(error instanceof Error ? error.message : String(error))
+  toast.add({ title: t('workspaceFileActions'), description: error instanceof Error ? error.message : String(error), color: 'error' })
 }
 
 async function copyFilePath() {
@@ -57,12 +66,14 @@ async function saveRename() {
 }
 
 async function deleteFile() {
-  const confirmMessage = t(import.meta.client && window.electron ? 'deleteFileConfirm' : 'deleteBrowserFileConfirm').replace('{name}', props.file.name)
-  if (!window.confirm(confirmMessage)) return
+  if (deleteBusy.value) return
+  deleteBusy.value = true
   try {
-    if (import.meta.client && window.electron) await deleteFileFromDisk(props.file.id, 'trash')
+    if (desktop.value) await deleteFileFromDisk(props.file.id, 'trash')
     else await deleteIndexedFile(props.file.id)
+    deleteConfirmOpen.value = false
   } catch (error) { showFileActionError(error) }
+  finally { deleteBusy.value = false }
 }
 
 const activate = () => {
@@ -75,9 +86,8 @@ const handleKeydown = (event: KeyboardEvent) => {
   if (!event.repeat) activate()
 }
 
-const graphicExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg', 'ico', 'tif', 'tiff', 'heic', 'heif', 'psd', 'ai', 'eps', 'raw', 'cr2', 'nef'])
 const previewExtensions = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'svg'])
-const isGraphic = computed(() => graphicExtensions.has(props.file.extension.toLowerCase().replace(/^\./, '')))
+const isGraphic = computed(() => imageFileExtensions.has(props.file.extension.toLowerCase().replace(/^\./, '')))
 const thumbnail = ref<string | undefined>(props.file.thumbnail)
 const cardElement = ref<HTMLElement | null>(null)
 let cardIsNearViewport = false
@@ -87,18 +97,18 @@ let thumbnailRequest = 0
 const loadThumbnail = async () => {
   const request = ++thumbnailRequest
   thumbnail.value = undefined
-  if (!import.meta.client || !settings.value.showThumbnails || !previewExtensions.has(props.file.extension.toLowerCase().replace(/^\./, ''))) return
+  if (!import.meta.client || compact.value || !settings.value.showThumbnails || !previewExtensions.has(props.file.extension.toLowerCase().replace(/^\./, ''))) return
   if (props.file.thumbnail) { thumbnail.value = props.file.thumbnail; return }
   if (!window.electron) return
   try {
-    const preview = await window.electron.invoke('files:get-image-preview', props.file.id)
+    const preview = await readFileThumbnail(props.file.id, () => request === thumbnailRequest)
     if (request === thumbnailRequest) thumbnail.value = preview ?? undefined
   } catch (error) {
     console.warn('Could not load card image preview:', error)
   }
 }
 
-watch(() => [props.file.id, props.file.thumbnail, settings.value.showThumbnails], () => { if (cardIsNearViewport) void loadThumbnail() })
+watch(() => [props.file.id, props.file.path, props.file.mtimeValue, props.file.thumbnail, settings.value.showThumbnails, compact.value], () => { if (cardIsNearViewport) void loadThumbnail() })
 
 onMounted(() => {
   desktop.value = Boolean(window.electron)
@@ -114,7 +124,7 @@ onMounted(() => {
   thumbnailObserver.observe(cardElement.value)
 })
 
-onBeforeUnmount(() => thumbnailObserver?.disconnect())
+onBeforeUnmount(() => { thumbnailRequest++; thumbnailObserver?.disconnect() })
 
 const icon = computed(() => {
   if (isGraphic.value) return 'lucide:image'
@@ -127,13 +137,82 @@ const icon = computed(() => {
   }
 })
 
+const matchedText = computed(() => (props.file.contentMatch ?? '').split(/\u0001([^\u0002]*)\u0002/g))
+const queryPattern = computed(() => {
+  if (!compact.value) return undefined
+  const terms = props.searchQuery?.match(/[^\s"]+/g)?.slice(0, 12).sort((a, b) => b.length - a.length)
+  if (!terms?.length) return undefined
+  return new RegExp(`(${terms.map(term => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'iu')
+})
+const nameParts = computed(() => queryPattern.value ? props.file.name.split(queryPattern.value) : [props.file.name])
+const compactMatch = computed(() => {
+  if (!compact.value || !props.searchQuery?.trim()) return []
+  if (matchedText.value.length > 1) {
+    const [before = '', match = '', after = ''] = matchedText.value
+    return [before.length > 12 ? `…${before.slice(-12)}` : before, match, after.length > 60 ? `${after.slice(0, 60)}…` : after]
+  }
+  const pattern = queryPattern.value
+  if (!pattern) return []
+  const { content, note, tags } = props.file
+  for (const text of [content, note, tags.map(tag => '#' + tag).join(' ')]) {
+    if (!text) continue
+    const match = pattern.exec(text)
+    if (!match) continue
+    const start = Math.max(0, match.index - 12)
+    const end = Math.min(text.length, match.index + match[0].length + 60)
+    return [
+      (start > 0 ? '…' : '') + text.slice(start, match.index),
+      match[0],
+      text.slice(match.index + match[0].length, end) + (end < text.length ? '…' : ''),
+    ]
+  }
+  return []
+})
 const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purple-500' : props.file.extension === 'pdf' ? 'bg-red-500/10 text-red-500' : props.file.extension === 'docx' ? 'bg-blue-500/10 text-blue-500' : props.file.extension === 'md' ? 'bg-primary-500/10 text-primary-500' : 'bg-surface-500/10 text-surface-500')
 </script>
 
 <template>
   <UContextMenu :items="contextItems" :aria-label="t('contextMenu')">
-  <article :draggable="desktop" @dragstart="startDrag" ref="cardElement" class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border p-3 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500 sm:p-4" :class="[layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list', (selectable ? selected : active) ? 'border-primary-500 bg-primary-500/10 shadow-sm ring-1 ring-inset ring-primary-500/40' : 'border-surface-200/80 bg-white hover:border-surface-300 hover:shadow-sm dark:border-surface-800 dark:bg-surface-800/50 dark:hover:border-surface-700']" role="button" tabindex="0" :aria-label="file.name" :aria-pressed="selectable ? Boolean(selected) : undefined" @click="activate" @keydown="handleKeydown">
-    <div class="file-card-body" :class="layout === 'grid' ? 'flex h-full min-w-0 flex-col gap-3' : 'flex min-w-0 flex-wrap items-start gap-3'">
+  <article
+    ref="cardElement"
+    data-file-card
+    :data-file-view="layout ?? 'list'"
+    :draggable="desktop"
+    role="button"
+    tabindex="0"
+    :aria-label="file.name"
+    :aria-pressed="selectable ? Boolean(selected) : undefined"
+    class="group relative w-full min-w-0 cursor-pointer overflow-hidden rounded-xl border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary-500"
+    :class="[
+      compact ? 'px-1.5 py-2.5' : ['p-3 sm:p-4', layout === 'grid' ? 'h-full file-card-grid' : 'file-card-list'],
+      compact ? 'hover:bg-surface-50 dark:hover:bg-surface-800' : 'hover:border-surface-300 hover:shadow-sm dark:hover:border-surface-700',
+      (selectable ? selected : active)
+        ? 'border-primary-500 bg-primary-500/10 ring-1 ring-inset ring-primary-500/40'
+        : 'border-surface-200/80 bg-white dark:border-surface-800 dark:bg-surface-800/50',
+    ]"
+    @dragstart="startDrag"
+    @click="activate"
+    @keydown="handleKeydown"
+  >
+    <div v-if="compact" class="flex h-full min-w-0 flex-col items-center justify-center gap-1 text-center">
+      <div class="flex size-8 shrink-0 items-center justify-center rounded-lg" :class="badgeClass" aria-hidden="true">
+        <Icon :name="icon" size="18" />
+      </div>
+      <span :title="file.name" class="line-clamp-2 w-full break-words text-xs font-medium text-surface-900 [overflow-wrap:anywhere] dark:text-surface-100">
+        <template v-for="(text, index) in nameParts" :key="index">
+          <mark v-if="index % 2" class="rounded bg-primary-500/20 text-primary-700 dark:text-primary-300">{{ text }}</mark>
+          <template v-else>{{ text }}</template>
+        </template>
+      </span>
+      <span class="text-[11px] tabular-nums text-surface-500 dark:text-surface-400">{{ file.size }}</span>
+      <p v-if="compactMatch.length" :title="compactMatch.join('')" class="mt-0.5 line-clamp-3 w-full border-t border-surface-200 pt-1 text-start text-[11px] leading-tight text-surface-600 [overflow-wrap:anywhere] dark:border-surface-700 dark:text-surface-300">
+        <template v-for="(text, index) in compactMatch" :key="index">
+          <mark v-if="index % 2" class="rounded bg-primary-500/20 text-primary-700 dark:text-primary-300">{{ text }}</mark>
+          <template v-else>{{ text }}</template>
+        </template>
+      </p>
+    </div>
+    <div v-else class="file-card-body" :class="layout === 'grid' ? 'flex h-full min-w-0 flex-col gap-3' : 'flex min-w-0 flex-wrap items-start gap-3'">
       <div class="file-card-main" :class="layout === 'grid' ? 'flex min-w-0 flex-1 flex-col gap-3' : 'flex min-w-0 flex-[1_1_14rem] items-start gap-3'">
         <div v-if="thumbnail && settings.showThumbnails" class="h-10 w-10 shrink-0 overflow-hidden rounded-full border border-surface-200 bg-surface-100 ring-2 ring-white dark:border-surface-700 dark:bg-surface-900 dark:ring-surface-800">
           <img :src="thumbnail" :alt="file.name" loading="lazy" class="h-full w-full object-cover" @error="thumbnail = undefined">
@@ -150,7 +229,12 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
             </div>
           </div>
           <p class="mt-0.5 truncate font-mono text-xs text-surface-400">{{ file.path }}</p>
-          <div class="mt-2.5 max-h-16 overflow-hidden break-words rounded-lg border border-surface-100 bg-surface-50 p-2.5 text-xs leading-relaxed text-surface-600 [overflow-wrap:anywhere] dark:border-surface-800 dark:bg-surface-900/60 dark:text-surface-300">{{ file.snippet }}</div>
+          <p v-if="file.contentMatch" class="mt-2 line-clamp-3 break-words text-xs leading-relaxed text-surface-600 dark:text-surface-300">
+            <template v-for="(text, index) in matchedText" :key="index">
+              <mark v-if="index % 2" class="rounded bg-primary-500/20 px-0.5 text-primary-700 dark:text-primary-300">{{ text }}</mark>
+              <template v-else>{{ text }}</template>
+            </template>
+          </p>
           <button v-if="!hideSummary" type="button" class="file-card-summary mt-2 inline-flex max-w-full items-center gap-1 rounded-lg bg-primary-500/10 px-2.5 py-1 text-left text-[11px] font-medium leading-tight text-primary-600 transition hover:bg-primary-500/20 dark:text-primary-400" @click.stop="emit('summary', file)">
             <Icon name="lucide:sparkles" size="12" class="shrink-0" /><span class="min-w-0 break-words">{{ t('aiSummary') }}</span>
           </button>
@@ -166,18 +250,26 @@ const badgeClass = computed(() => isGraphic.value ? 'bg-purple-500/10 text-purpl
     </div>
   </article>
   </UContextMenu>
+  <UModal v-if="mountDeleteDialog" v-model:open="deleteConfirmOpen" :ui="{ overlay: 'motion-reduce:animate-none', content: 'motion-reduce:animate-none' }" :dismissible="!deleteBusy" :title="t('deleteDialogTitle')" :description="deleteMessage">
+    <template #footer>
+      <UButton color="neutral" variant="outline" :disabled="deleteBusy" @click="deleteConfirmOpen = false">{{ t('cancel') }}</UButton>
+      <UButton color="error" :loading="deleteBusy" @click="deleteFile">{{ t('deleteFile') }}</UButton>
+    </template>
+  </UModal>
   <Teleport to="body">
-    <div v-if="renameDialogOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" @click.self="renameDialogOpen = false" @keydown.esc="renameDialogOpen = false">
-      <section class="w-full max-w-md rounded-xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900" role="dialog" aria-modal="true" :aria-label="t('renameFile')">
-        <h2 class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ t('renameFile') }}</h2>
-        <label class="mt-4 block text-sm text-surface-600 dark:text-surface-300" :for="`file-rename-${file.id}`">{{ t('renameFilePrompt') }}</label>
-        <input :id="`file-rename-${file.id}`" v-model="renameValue" autofocus class="mt-2 w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-100" maxlength="180" @keydown.enter.prevent="saveRename" @keydown.esc="renameDialogOpen = false">
-        <div class="mt-5 flex justify-end gap-2">
-          <UButton color="neutral" variant="outline" :disabled="renameBusy" @click="renameDialogOpen = false">{{ t('cancel') }}</UButton>
-          <UButton color="primary" :loading="renameBusy" :disabled="!renameValue.trim()" @click="saveRename">{{ t('save') }}</UButton>
-        </div>
-      </section>
-    </div>
+    <AppModalMotion>
+      <div v-if="renameDialogOpen" class="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" @click.self="renameDialogOpen = false" @keydown.esc="renameDialogOpen = false">
+        <section class="w-full max-w-md rounded-xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900" role="dialog" aria-modal="true" :aria-label="t('renameFile')">
+          <h2 class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ t('renameFile') }}</h2>
+          <label class="mt-4 block text-sm text-surface-600 dark:text-surface-300" :for="`file-rename-${file.id}`">{{ t('renameFilePrompt') }}</label>
+          <input :id="`file-rename-${file.id}`" v-model="renameValue" autofocus class="mt-2 w-full rounded-lg border border-surface-300 bg-white px-3 py-2 text-sm text-surface-900 outline-none focus:border-primary-500 focus:ring-2 focus:ring-primary-500/30 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-100" maxlength="180" @keydown.enter.prevent="saveRename" @keydown.esc="renameDialogOpen = false">
+          <div class="mt-5 flex justify-end gap-2">
+            <UButton color="neutral" variant="outline" :disabled="renameBusy" @click="renameDialogOpen = false">{{ t('cancel') }}</UButton>
+            <UButton color="primary" :loading="renameBusy" :disabled="!renameValue.trim()" @click="saveRename">{{ t('save') }}</UButton>
+          </div>
+        </section>
+      </div>
+    </AppModalMotion>
   </Teleport>
 </template>
 

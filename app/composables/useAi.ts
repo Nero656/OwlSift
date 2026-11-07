@@ -1,3 +1,6 @@
+import { emptyConnection, connectProfile, enabledRequestProviders, invalidateConnection, connectionFingerprint, type RequestProvider, type ProviderConnection } from '../../src/services/localProviders'
+import { parseModelList, ProviderError, safeProviderError } from '../../src/services/modelTransport'
+import { localModelResponse } from '../utils/localModelTransport'
 import { modelContentToText } from '../utils/chatContent'
 import { canEditAiFile, parseAiArtifacts } from '../utils/aiArtifacts'
 import { parseAiEditEnvelope } from '../utils/aiEditContent'
@@ -49,13 +52,6 @@ const normalizeLmStudioEndpoint = (endpoint: string) => {
   const normalized = normalizeEndpoint(endpoint) || 'http://127.0.0.1:1234/v1'
   return normalized.endsWith('/v1') ? normalized : `${normalized}/v1`
 }
-const extractOllamaModels = (payload: { models?: Array<{ name?: string; model?: string }> }) => [...new Set((payload.models ?? []).map(item => item.name || item.model).filter((item): item is string => Boolean(item)))]
-
-const extractModels = (payload: OpenAIModelsResponse) => [...new Set([
-  ...(payload.data ?? []).map(item => item.id),
-  ...(payload.models ?? []).map(item => item.id || item.name),
-].filter((item): item is string => Boolean(item)))]
-
 const buildMessages = (config: ModelConfig, question: string, files: LocalFile[], editableIds: number[] = []) => {
   const budget = Math.min(12000, Math.floor(60000 / Math.max(1, files.length)))
   const context = files.map((file, index) => [
@@ -73,6 +69,7 @@ const contentToText = modelContentToText
 
 const parseOpenAIReply = (payload: OpenAIChatResponse) => {
   if (payload.error?.message) throw new Error(payload.error.message)
+  if (!Array.isArray(payload.choices) && typeof payload.output_text !== 'string') throw new ProviderError('response', 'Invalid chat API response. Check the configured provider and chat/completions endpoint.')
   const choice = payload.choices?.[0]
   const text = [
     [contentToText(choice?.message?.content), contentToText(choice?.message?.images)].filter(Boolean).join('\n'),
@@ -110,18 +107,15 @@ const extractCodeFence = (reply: string, extension: string) => {
   return blocks.find(match => aliases[extension]?.includes(match[1]!.trim().toLowerCase())) ?? blocks.at(-1)
 }
 
-const requestChat = async (endpoint: string, model: string, messages: Array<{ role: string; content: string }>, apiKey = '', signal?: AbortSignal, feedback: AiFeedback = () => {}, proxy = false) => {
+const requestChat = async (endpoint: string, model: string, messages: Array<{ role: string; content: string }>, apiKey = '', signal?: AbortSignal, feedback: AiFeedback = () => {}, local?: LocalModelConfig) => {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   const key = normalizeApiKey(apiKey)
   if (key) headers.Authorization = 'Bearer ' + key
   for (let attempt = 0; attempt < 2; attempt += 1) {
     feedback(attempt ? 'retrying' : 'connecting', '')
-    const response = await fetch(proxy ? '/api/ai/chat' : `${endpoint}/chat/completions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ model, messages: withEmptyResponseRetry(messages, attempt), stream: true, ...(proxy ? { endpoint } : {}) }),
-      signal,
-    })
+    const response = local
+      ? await localModelResponse({ ...local, operation: 'chat', model, messages: withEmptyResponseRetry(messages, attempt), stream: true }, signal)
+      : await fetch(`${endpoint}/chat/completions`, { method: 'POST', headers, body: JSON.stringify({ model, messages: withEmptyResponseRetry(messages, attempt), stream: true }), signal })
     if (!response.ok) throw await readModelApiError(response)
     try {
       feedback('waiting')
@@ -132,17 +126,17 @@ const requestChat = async (endpoint: string, model: string, messages: Array<{ ro
       feedback('receiving', text)
       return text
     } catch (error) {
+      if (error instanceof SyntaxError) throw new ProviderError('response', 'Malformed JSON in chat response. Check the server API and model compatibility.')
+      if (local && error instanceof TypeError) throw safeProviderError(error, local)
+      if (local && !(error instanceof EmptyModelResponseError) && !(error instanceof ProviderError) && !signal?.aborted) throw new ProviderError('response', 'The model chat stream failed. Check model/server logs and API compatibility.')
       if (!(error instanceof EmptyModelResponseError) || attempt === 1 || signal?.aborted) throw error
     }
   }
   throw new EmptyModelResponseError()
 }
 
-const chatLocalDirect = (config: LocalModelConfig, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, feedback?: AiFeedback) =>
-  requestChat(normalizeLmStudioEndpoint(config.endpoint), config.model, messages, '', signal, feedback)
-
-const chatLocalViaProxy = (config: LocalModelConfig, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, feedback?: AiFeedback) =>
-  requestChat(normalizeLmStudioEndpoint(config.endpoint), config.model, messages, '', signal, feedback, true)
+const chatLocal = (config: LocalModelConfig, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, feedback?: AiFeedback) =>
+  requestChat('', config.model, messages, config.apiKey, signal, feedback, config)
 
 const chatGlobal = (config: GlobalModelConfig, messages: Array<{ role: string; content: string }>, signal?: AbortSignal, feedback?: AiFeedback) =>
   requestChat(normalizeEndpoint(config.endpoint), config.model, messages, config.apiKey, signal, feedback)
@@ -185,18 +179,29 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
     get: () => chatErrors.value[conversationKey.value] ?? '',
     set: value => { chatErrors.value[conversationKey.value] = value },
   })
-  const connectionStatus = useState<'idle' | 'ok' | 'error'>('ai-connection-status', () => 'idle')
-  const availableModels = useState<string[]>('ai-available-models', () => [])
-  const activeModelConfig = computed<ModelConfig>(() => settings.value.modelProvider === 'global' ? settings.value.globalModel : settings.value.localModel)
-  const isModelEnabled = computed(() => settings.value.modelProvider === 'global' || settings.value.localModel.enabled)
-  const modelReady = computed(() => connectionStatus.value === 'ok' && isModelEnabled.value && Boolean(activeModelConfig.value.model.trim() && activeModelConfig.value.endpoint.trim()))
+  const connections = useState<Record<RequestProvider, ProviderConnection>>('ai-provider-connections', () => ({ ollama: emptyConnection(), lmstudio: emptyConnection(), global: emptyConnection() }))
+  const requestChoices = useState<Record<string, RequestProvider>>('ai-request-providers', () => ({}))
+  const enabledProviders = computed(() => enabledRequestProviders(settings.value))
+  const requestProvider = computed<RequestProvider>({
+    get: () => {
+      const selected = requestChoices.value[conversationKey.value] ?? (settings.value.modelProvider === 'global' ? 'global' : settings.value.localProvider)
+      return enabledProviders.value.includes(selected) ? selected : enabledProviders.value[0] ?? selected
+    },
+    set: value => { requestChoices.value[conversationKey.value] = value },
+  })
+  const getConfig = (provider: RequestProvider): ModelConfig => provider === 'global' ? settings.value.globalModel : settings.value.localModels[provider]
+  const activeModelConfig = computed<ModelConfig>(() => getConfig(requestProvider.value))
+  const connectionStatus = computed(() => connections.value[requestProvider.value].status)
+  const isModelEnabled = computed(() => getConfig(requestProvider.value).enabled)
+  const availableModels = computed(() => isModelEnabled.value ? connections.value[requestProvider.value].models : [])
+  const modelReady = computed(() => connectionStatus.value === 'ok' && isModelEnabled.value && availableModels.value.includes(activeModelConfig.value.model) && Boolean(activeModelConfig.value.endpoint.trim()))
   const responseReadyNotice = useState<{ id: string; key: string; paths: string[]; fileIds: number[]; response: string } | null>('ai-response-ready-notice', () => null)
 
   const formatError = (error: unknown) => {
     let message = error instanceof Error ? error.message : String(error)
-    if (settings.value.modelProvider === 'global') {
+    if (error instanceof ProviderError) return t(error.code === 'auth' ? 'localAuthError' : error.code === 'response' ? 'localResponseError' : error.code === 'address' ? 'localAddressError' : error.code === 'timeout' ? 'localTimeoutError' : 'localNetworkError') + ' ' + message
+    if (requestProvider.value === 'global') {
       if ((error instanceof ModelApiError && (error.status === 401 || error.code === 'invalid_api_key')) || /invalid_api_key|incorrect api key|invalid api key|invalid authentication/i.test(message)) {
-        connectionStatus.value = 'error'
         return t('globalAuthError')
       }
       if (error instanceof ModelApiError && error.status === 403) return t('globalAccessError')
@@ -205,68 +210,46 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
       }
     }
     if (error instanceof EmptyModelResponseError || /empty model response/i.test(message)) return t('emptyModelResponse')
-    if (settings.value.modelProvider === 'global' && /no credits|insufficient.?quota|credit balance|billing.*(limit|quota)|out of credits/i.test(message)) return t('globalCreditsError')
+    if (requestProvider.value === 'global' && /no credits|insufficient.?quota|credit balance|billing.*(limit|quota)|out of credits/i.test(message)) return t('globalCreditsError')
     return `${t('modelRequestError')} ${message}`
   }
 
-  watch(() => [settings.value.modelProvider, settings.value.localModel.provider, settings.value.globalModel.provider, activeModelConfig.value.endpoint, ('apiKey' in activeModelConfig.value ? activeModelConfig.value.apiKey : '')], () => {
-    availableModels.value = []
-    connectionStatus.value = 'idle'
-    lastError.value = ''
-  })
-
-  const testConnection = async () => {
-    const errorKey = conversationKey.value
-    chatErrors.value[errorKey] = ''
-    const config = activeModelConfig.value
+  for (const provider of ['ollama', 'lmstudio', 'global'] as const) {
+    watch(() => connectionFingerprint(getConfig(provider)), () => invalidateConnection(connections.value[provider], getConfig(provider)), { immediate: true, flush: 'sync' })
+  }
+  const testConnection = async (provider: RequestProvider = requestProvider.value) => {
+    const config = getConfig(provider)
+    if (!config.enabled) throw new Error(t('modelDisabled'))
+    const snapshot = { ...config }
+    const state = connections.value[provider]
     try {
-      let payload: OpenAIModelsResponse
-      if (settings.value.modelProvider === 'local') {
-        try {
-          if (config.provider === 'ollama') {
-            const response = await fetch(`${normalizeEndpoint(config.endpoint) || 'http://127.0.0.1:11434'}/api/tags`)
-            if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`)
-            payload = await response.json() as OpenAIModelsResponse
-          } else {
-            const response = await fetch(`${normalizeLmStudioEndpoint(config.endpoint)}/models`)
-            if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`)
-            payload = await response.json() as OpenAIModelsResponse
-          }
-        } catch {
-          payload = await $fetch<OpenAIModelsResponse>('/api/ai/status', { query: { endpoint: config.endpoint, provider: config.provider } })
+      return await connectProfile(state, config, async () => {
+        if (provider !== 'global') {
+          const response = await localModelResponse({ ...(snapshot as LocalModelConfig), operation: 'models' })
+          try { return parseModelList(provider, await response.json()) }
+          catch (error) { if (error instanceof ProviderError) throw error; throw new ProviderError('response', 'Malformed JSON model list. Check server URL and API compatibility.') }
         }
-      } else {
-        const global = config as GlobalModelConfig
-        const headers: Record<string, string> = {}
-        const key = normalizeApiKey(global.apiKey)
-        if (key) headers.Authorization = 'Bearer ' + key
-        const response = await fetch(`${normalizeEndpoint(global.endpoint)}/models`, { headers })
+        const key = normalizeApiKey((snapshot as GlobalModelConfig).apiKey)
+        const response = await fetch(`${normalizeEndpoint(snapshot.endpoint)}/models`, { headers: key ? { Authorization: 'Bearer ' + key } : {}, signal: AbortSignal.timeout(10000) })
         if (!response.ok) throw await readModelApiError(response)
-        payload = await response.json() as OpenAIModelsResponse
-      }
-
-      availableModels.value = settings.value.modelProvider === 'local' && settings.value.localModel.provider === 'ollama'
-        ? extractOllamaModels(payload as { models?: Array<{ name?: string; model?: string }> })
-        : extractModels(payload)
-      connectionStatus.value = 'ok'
-      config.model = availableModels.value.includes(config.model) ? config.model : availableModels.value[0] ?? ''
-      return availableModels.value
+        return parseModelList('global', await response.json())
+      })
     } catch (error) {
-      connectionStatus.value = 'error'
-      chatErrors.value[errorKey] = formatError(error)
+      if (provider === requestProvider.value) lastError.value = formatError(error)
       throw error
     }
   }
 
   const getCompletion = async (question: string, file?: FileContext, history: ChatMessage[] = [], outputFolder?: string, editableIds: number[] = [], requestKey?: string, requiredFileExtension?: string, createFilesRequested = false, requiredFileName?: string) => {
-    const config = { ...activeModelConfig.value }
+    const provider = requestProvider.value
+    const config = { ...getConfig(provider) }
+    const fingerprint = connectionFingerprint(config)
     generation.value = { key: requestKey ?? contextKey(file), stage: 'preparing', text: '', model: config.model }
     const feedback: AiFeedback = (stage, text) => {
       generation.value.stage = stage
       if (text !== undefined) generation.value.text = text
     }
     if (!isModelEnabled.value || !config.endpoint.trim()) throw new Error(t('connectModelBeforeChat'))
-    if (!config.model.trim()) { await testConnection(); config.model = activeModelConfig.value.model; generation.value.model = config.model }
     if (!config.model.trim()) throw new Error(t('connectModelBeforeChat'))
     const documents = contextFiles(file).map(file => ({ ...file }))
     for (const document of documents) {
@@ -286,26 +269,19 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
     payload.splice(payload.length - 1, 0, ...history.slice(-20).map(message => ({ role: message.sender === 'user' ? 'user' : 'assistant', content: message.text })))
     const controller = new AbortController()
     activeRequestController = controller
-    if (settings.value.modelProvider === 'global') {
-      const isCurrentConnection = () => settings.value.modelProvider === 'global'
-        && settings.value.globalModel.provider === (config as GlobalModelConfig).provider
-        && settings.value.globalModel.endpoint === config.endpoint
-        && settings.value.globalModel.apiKey === (config as GlobalModelConfig).apiKey
-      try {
-        const response = await chatGlobal(config as GlobalModelConfig, payload, controller.signal, feedback)
-        if (isCurrentConnection()) connectionStatus.value = 'ok'
-        return response
-      } catch (error) {
-        if (!controller.signal.aborted && isCurrentConnection()) connectionStatus.value = 'error'
-        throw error
-      }
-    }
+    if (!getConfig(provider).enabled) throw new Error(t('modelDisabled'))
+    const state = connections.value[provider]
     try {
-      return await chatLocalDirect(config as LocalModelConfig, payload, controller.signal, feedback)
+      const response = provider === 'global'
+        ? await chatGlobal(config as GlobalModelConfig, payload, controller.signal, feedback)
+        : await chatLocal(config as LocalModelConfig, payload, controller.signal, feedback)
+      if (connectionFingerprint(getConfig(provider)) === fingerprint) state.status = 'ok'
+      return response
     } catch (error) {
-      if (controller.signal.aborted || !(error instanceof TypeError) || generation.value.text) throw error
-      feedback('proxy')
-      return await chatLocalViaProxy(config as LocalModelConfig, payload, controller.signal, feedback)
+      if (!controller.signal.aborted && connectionFingerprint(getConfig(provider)) === fingerprint) {
+        state.status = 'error'; state.error = formatError(error)
+      }
+      throw error
     }
   }
 
@@ -353,12 +329,13 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
     target.push({ sender: 'user', text: trimmed, createdAt: Date.now(), attachments: selected.map(file => ({ id: file.id, name: file.name, path: file.path, extension: file.extension })) })
     isThinking.value = true
     lastError.value = ''
+    const responseProvider = requestProvider.value
     let savingOutputs = false
     try {
       if (explicitFileCreation && !requestedOutputFolder) throw new Error(t('outputFolderUnavailable'))
       if (requestedOutputFolder && !folders.value.some(folder => folder.path === requestedOutputFolder)) throw new Error(t('outputFolderUnavailable'))
       const reply = await getCompletion(trimmed, selected, history, requestedOutputFolder, editableIds, key, requestedExtension, explicitFileCreation, fileCreationRequest?.name)
-      const message: ChatMessage = { sender: 'ai', text: reply, createdAt: Date.now() }
+      const message: ChatMessage = { sender: 'ai', text: reply, createdAt: Date.now(), modelProvider: responseProvider }
       target.push(message)
       const savedMessage = target[target.length - 1]!
       let refusedEdit: { id: number; content: string } | undefined
@@ -525,5 +502,5 @@ export const useAi = (contextFile?: { readonly value: FileContext }, chatId?: { 
   }
 
   const clear = () => { messages.value = []; lastError.value = '' }
-  return { messages, conversationKey, isThinking, generationFeedback, lastQuestion, lastError, connectionStatus, availableModels, pendingFileEdits, confirmPendingFileEdit, dismissPendingFileEdit, modelReady, activeModelConfig, isModelEnabled, ask, summarize, refineImagePrompt, cancel, repeatLast, clear, testConnection }
+  return { messages, conversationKey, isThinking, generationFeedback, lastQuestion, lastError, connectionStatus, availableModels, connections, requestProvider, pendingFileEdits, confirmPendingFileEdit, dismissPendingFileEdit, modelReady, activeModelConfig, isModelEnabled, ask, summarize, refineImagePrompt, cancel, repeatLast, clear, testConnection }
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import type { LocalFile } from '~/types/file'
 
-const props = withDefaults(defineProps<{ tag?: string; folderPath?: string }>(), { tag: 'div' })
+const props = withDefaults(defineProps<{ tag?: string; folderPath?: string; forwardDirectoryDrops?: boolean }>(), { tag: 'div' })
 const emit = defineEmits<{ imported: [files: LocalFile[]] }>()
 const { importDroppedFiles, openFileTransfer } = useFiles()
 const { t } = useLanguage()
@@ -29,11 +29,13 @@ const leave = (event: DragEvent) => {
 const drop = async (event: DragEvent) => {
   if (!hasFiles(event)) return
   event.preventDefault()
-  event.stopPropagation()
   depth.value = 0
-  if (importing.value) return
   const transfer = event.dataTransfer
   if (!transfer) return
+  const directories = !hasInternalFiles(event) && Array.from(transfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)
+  if (props.forwardDirectoryDrops && directories) return
+  event.stopPropagation()
+  if (importing.value) return
   if (hasInternalFiles(event)) {
     try {
       const ids: unknown = JSON.parse(transfer.getData('application/x-owlsift-files'))
@@ -43,7 +45,6 @@ const drop = async (event: DragEvent) => {
   }
   // Capture File objects before the browser clears the drag data store.
   const sources = Array.from(transfer.files)
-  const directories = Array.from(transfer.items).filter(item => item.webkitGetAsEntry?.()?.isDirectory).length
   if (!sources.length || directories) { notice.value = t('dropDirectories'); return }
   importing.value = true
   notice.value = ''

@@ -87,7 +87,7 @@ Search and file organization can be used without an AI provider.
 
 ## Search and scanning
 
-Desktop search uses SQLite with FTS5. It searches the data actually indexed; it is not general semantic/vector search across every file on the computer.
+Desktop search uses SQLite with FTS5, prioritizing exact matches before typo-tolerant matches across filenames and indexed content. It searches the data actually indexed; it is not general semantic/vector search across every file on the computer.
 
 - Choose a drive and file extensions.
 - Scan the available drive scope or select multiple folders to scan in parts.
@@ -125,6 +125,8 @@ Desktop workspaces reference actual filesystem folders.
 Removing a file from OwlSift and deleting it from disk are separate actions. Check the action label. AI edits reconstruct supported document formats from proposed text; complex formatting, embedded objects, and original layout may not survive. Review changes and back up important originals.
 
 ## AI setup
+
+Ollama and LM Studio now keep independent profiles and connections. Choose the provider for each chat with **Use provider**. See [LAN setup, diagnostics, and typo-tolerant search](docs/providers-and-search.md).
 
 ### Ollama
 

@@ -9,11 +9,12 @@ interface DatabaseStatus {
 }
 
 const status = ref<DatabaseStatus | null>(null)
-const { t } = useLanguage()
+const { t, language } = useLanguage()
 const { files } = useFiles()
 const isElectron = typeof window !== 'undefined' && 'electron' in window
 let refreshTimer: ReturnType<typeof setInterval> | undefined
 
+const indexedCount = computed(() => isElectron ? status.value?.fileCount ?? 0 : files.value.length)
 const connected = computed(() => isElectron ? status.value?.connected === true : true)
 const stateLabel = computed(() => {
   if (!isElectron) return t('browserStorage')
@@ -65,11 +66,9 @@ onUnmounted(() => {
 
       <p class="text-[11px] leading-relaxed text-surface-500 dark:text-surface-400">
         <template v-if="connected && isElectron">
-          {{ status?.fileCount }} {{ t('indexedFiles') }} · {{ formattedSize }}<br>
-          FTS5 {{ status?.fts5Available ? t('fts5Ready') : t('fts5Unavailable') }}
+          {{ formattedSize }} · FTS5 {{ status?.fts5Available ? t('fts5Ready') : t('fts5Unavailable') }}
         </template>
         <template v-else-if="connected && !isElectron">
-          {{ files.length }} {{ t('indexedFiles') }}<br>
           {{ t('browserIndexReady') }}
         </template>
         <template v-else-if="!isElectron">
@@ -82,6 +81,14 @@ onUnmounted(() => {
           {{ t('checkingDb') }}
         </template>
       </p>
+
+      <div v-if="connected" data-testid="indexed-file-count" role="status" aria-live="polite" aria-atomic="true"
+        class="mt-2 flex flex-wrap items-center gap-x-1.5 gap-y-1 border-t border-surface-200 pt-2 text-xs text-surface-600 dark:border-surface-700 dark:text-surface-300">
+        <Icon name="lucide:files" size="14" class="shrink-0 text-primary-500" aria-hidden="true" />
+        <span>{{ t('indexed') }}</span>
+        <strong class="font-semibold tabular-nums text-surface-900 dark:text-surface-100">{{ indexedCount.toLocaleString(language) }}</strong>
+        <span>{{ t('files') }}</span>
+      </div>
     </div>
   </div>
 </template>

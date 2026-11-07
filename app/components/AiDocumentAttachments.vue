@@ -78,7 +78,7 @@ defineExpose({ open, openComputerPicker })
     <p v-if="notice" role="alert" class="text-xs text-amber-600">{{ notice }}</p>
     <Teleport to="body">
       <dialog ref="dialog" aria-labelledby="document-picker-title"
-        class="m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto rounded-2xl border border-surface-200 bg-white p-4 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100 md:p-6"
+        class="owl-native-dialog m-auto max-h-[90vh] w-[calc(100%-2rem)] max-w-5xl overflow-y-auto rounded-2xl border border-surface-200 bg-white p-4 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100 md:p-6"
         @click="($event.target === dialog) && dialog?.close()" @close="emit('selectionClosed')" @dragover.prevent @drop.prevent>
         <header class="mb-4 flex items-start justify-between gap-3">
           <h2 id="document-picker-title" class="text-lg font-semibold">{{ t('chooseDocuments') }}</h2>

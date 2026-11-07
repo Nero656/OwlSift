@@ -14,7 +14,7 @@ export default defineEventHandler(async (event) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: body.model, messages: body.messages ?? [], stream: body.stream === true }),
     })
-    if (!response.ok) throw createError({ statusCode: response.status, statusMessage: await response.text() || 'LM Studio request failed' })
+    if (!response.ok) throw createError({ statusCode: response.status, statusMessage: await response.text() || 'LM Studio (bionic) request failed' })
     if (response.headers.get('content-type')?.includes('text/event-stream') && response.body) {
       setHeader(event, 'Content-Type', 'text/event-stream')
       setHeader(event, 'Cache-Control', 'no-cache')

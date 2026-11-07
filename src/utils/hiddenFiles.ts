@@ -68,7 +68,12 @@ while (($line = [Console]::ReadLine()) -ne $null) {
     $request = $null
     try {
         $request = $line | ConvertFrom-Json
-        $names = @([System.IO.Directory]::EnumerateFileSystemEntries($request.path) | Where-Object { ([int][System.IO.File]::GetAttributes($_) -band 6) -ne 0 } | ForEach-Object { [System.IO.Path]::GetFileName($_) })
+        $names = @([System.IO.Directory]::EnumerateFileSystemEntries($request.path) | ForEach-Object {
+            $entryPath = $_
+            try {
+                if (([int][System.IO.File]::GetAttributes($entryPath) -band 6) -ne 0) { [System.IO.Path]::GetFileName($entryPath) }
+            } catch { [System.IO.Path]::GetFileName($entryPath) }
+        })
         [Console]::WriteLine((@{id=$request.id; names=$names} | ConvertTo-Json -Compress))
     } catch {
         [Console]::WriteLine((@{id=$request.id; error=$_.Exception.Message} | ConvertTo-Json -Compress))
@@ -92,7 +97,7 @@ while (($line = [Console]::ReadLine()) -ne $null) {
                             const item = pending.get(response.id);
                             if (!item) continue;
                             clearTimeout(item.timer); pending.delete(response.id);
-                            if (response.error) item.reject(new Error(response.error));
+                            if (response.error) item.reject(Object.assign(new Error(response.error), { code: 'EACCES' }));
                             else item.resolve(new Set((response.names ?? []).map(name => String(name).toLowerCase())));
                         } catch { fail(new Error('Invalid visibility response')); }
                     }
@@ -112,12 +117,11 @@ while (($line = [Console]::ReadLine()) -ne $null) {
         if (isHiddenPath(filePath)) return true;
         if (process.platform !== 'win32') return false;
         if (disposed) throw new Error('Visibility worker stopped');
-        let current = path.resolve(filePath);
-        while (path.dirname(current) !== current) {
+        const ancestors: string[] = [];
+        for (let current = path.resolve(filePath); path.dirname(current) !== current; current = path.dirname(current)) ancestors.push(current);
+        for (const current of ancestors.reverse()) {
             signal.throwIfAborted();
-            const parent = path.dirname(current);
-            if ((await hiddenEntries(parent)).has(path.basename(current).toLowerCase())) return true;
-            current = parent;
+            if ((await hiddenEntries(path.dirname(current))).has(path.basename(current).toLowerCase())) return true;
         }
         return false;
     };

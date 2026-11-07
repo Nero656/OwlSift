@@ -1,18 +1,15 @@
 import type { ComfySettings } from '~/types/media'
+import { fileViews, type FileView } from '~/utils/fileViews'
 import { defaultComfySettings, normalizeComfySettings } from '~/utils/comfyWorkflow'
 import { defaultCustomization, normalizeCustomization, themeFonts, type ThemeCustomization } from '~/utils/theme'
 
-export interface LocalModelConfig {
-  enabled: boolean
-  provider: 'lmstudio' | 'ollama'
-  endpoint: string
-  model: string
-  systemPrompt: string
-}
+import { defaultLocalModels, restoreLocalModels, restoreGlobalEnabled, type LocalModelConfig, type LocalProvider } from '../../src/services/localProviders'
+export type { LocalModelConfig } from '../../src/services/localProviders'
 
 export type GlobalApiProvider = 'openai' | 'gemini' | 'deepseek'
 
 export interface GlobalModelConfig {
+  enabled: boolean
   provider: GlobalApiProvider
   endpoint: string
   apiKey: string
@@ -27,13 +24,15 @@ export interface InterfaceSettings {
   theme: 'dark' | 'light' | 'light-cloud' | 'light-silver' | 'light-ash' | 'light-stone'
   customization: ThemeCustomization
   compactSidebar: boolean
-  fileView: 'list' | 'grid'
+  fileView: FileView
   pageSize: number
+  documentPageSize: number
   showThumbnails: boolean
   showSystemFiles: boolean
   aiResponseNotifications: boolean
   aiResponseToastDuration: number
-  localModel: LocalModelConfig
+  localProvider: LocalProvider
+  localModels: Record<LocalProvider, LocalModelConfig>
   globalModel: GlobalModelConfig
 }
 
@@ -45,12 +44,14 @@ export const defaults = (): InterfaceSettings => ({
   compactSidebar: false,
   fileView: 'grid',
   pageSize: 50,
+  documentPageSize: defaultDocumentPageSize,
   showThumbnails: true,
   showSystemFiles: false,
   aiResponseNotifications: true,
   aiResponseToastDuration: 5000,
   modelProvider: 'local',
   globalModel: {
+    enabled: false,
     provider: 'openai',
     endpoint: 'https://api.openai.com/v1',
     apiKey: '',
@@ -58,14 +59,12 @@ export const defaults = (): InterfaceSettings => ({
     model: '',
     systemPrompt: 'You are a helpful assistant. Answer using the supplied file context when it is available.',
   },
-  localModel: {
-    enabled: false,
-    provider: 'lmstudio',
-    endpoint: 'http://127.0.0.1:1234/v1',
-    model: '',
-    systemPrompt: 'You are a helpful local assistant. Answer using the supplied file context when it is available.',
-  },
+  localProvider: 'lmstudio',
+  localModels: defaultLocalModels(),
 })
+
+export const documentPageSizes = [10, 25, 50, 100] as const
+const defaultDocumentPageSize = 25
 
 export const useSettings = () => {
   const appConfig = useAppConfig()
@@ -92,13 +91,12 @@ export const useSettings = () => {
   const save = () => {
     if (!import.meta.client || !hasLoaded.value) return
     localStorage.setItem(storageKey, JSON.stringify(settings.value))
-    applyTheme()
   }
 
   const load = () => {
     if (!import.meta.client || hasLoaded.value) return
     try {
-      const stored = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<InterfaceSettings>
+      const stored = JSON.parse(localStorage.getItem(storageKey) ?? '{}') as Partial<InterfaceSettings> & { localModel?: Partial<LocalModelConfig> }
       const initial = defaults()
       const pageSize = [25, 50, 100].includes(Number(stored.pageSize)) ? Number(stored.pageSize) : initial.pageSize
       settings.value = {
@@ -107,27 +105,25 @@ export const useSettings = () => {
         comfy: normalizeComfySettings(stored.comfy),
         customization: normalizeCustomization(stored.customization),
         theme: ['light', 'light-cloud', 'light-silver', 'light-ash', 'light-stone'].includes(String(stored.theme)) ? stored.theme as InterfaceSettings['theme'] : 'dark',
-        fileView: stored.fileView === 'list' ? 'list' : 'grid',
+        fileView: fileViews.find(view => view.value === stored.fileView)?.value ?? initial.fileView,
         pageSize,
+        documentPageSize: documentPageSizes.find(size => size === Number(stored.documentPageSize)) ?? defaultDocumentPageSize,
         showThumbnails: stored.showThumbnails !== false,
         showSystemFiles: stored.showSystemFiles === true,
         aiResponseNotifications: stored.aiResponseNotifications !== false,
         aiResponseToastDuration: [3000, 5000, 8000, 10000].includes(Number(stored.aiResponseToastDuration)) ? Number(stored.aiResponseToastDuration) : initial.aiResponseToastDuration,
         compactSidebar: Boolean(stored.compactSidebar),
         modelProvider: stored.modelProvider === 'global' ? 'global' : 'local',
-        localModel: {
-          ...initial.localModel,
-          ...(stored.localModel ?? {}),
-          provider: stored.localModel?.provider === 'ollama' ? 'ollama' : 'lmstudio',
-          endpoint: stored.localModel?.endpoint ?? initial.localModel.endpoint,
-        },
+        ...restoreLocalModels(stored),
         globalModel: {
           ...initial.globalModel,
           ...(stored.globalModel ?? {}),
+          enabled: restoreGlobalEnabled(stored),
           provider: ['openai', 'gemini', 'deepseek'].includes(String(stored.globalModel?.provider)) ? stored.globalModel!.provider! : 'openai',
           providerKeys: { ...initial.globalModel.providerKeys, ...(stored.globalModel?.providerKeys ?? {}) },
         },
       }
+      delete (settings.value as InterfaceSettings & { localModel?: Partial<LocalModelConfig> }).localModel
     } catch {
       settings.value = defaults()
     }
@@ -144,19 +140,17 @@ export const useSettings = () => {
       compactSidebar: initial.compactSidebar,
       fileView: initial.fileView,
       pageSize: initial.pageSize,
+      documentPageSize: initial.documentPageSize,
       showThumbnails: initial.showThumbnails,
       aiResponseNotifications: initial.aiResponseNotifications,
       aiResponseToastDuration: initial.aiResponseToastDuration,
     }
     hasLoaded.value = true
-    save()
   }
 
   const setTheme = (theme: InterfaceSettings['theme']) => {
     settings.value = { ...settings.value, theme }
   }
 
-  if (import.meta.client && !hasLoaded.value) load()
-  watch(settings, save, { deep: true })
   return { settings, load, save, reset, applyTheme, setTheme }
 }

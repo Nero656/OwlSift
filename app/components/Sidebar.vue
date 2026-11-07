@@ -7,7 +7,8 @@ import { useAiChats } from '../composables/useAiChats';
 
 const {
   folders,
-  selectedFolder
+  selectedFolder,
+  selectCatalogScope,
 } = useFiles()
 
 const route = useRoute()
@@ -37,7 +38,7 @@ const isCompact = computed({
 
 const isActive = (item: { id: string; route: string }) => {
   if (item.id === 'search') {
-    return route.path === '/'
+    return route.path === '/' && !selectedFolder.value
   }
 
   return route.path === item.route ||
@@ -88,10 +89,10 @@ const navItems = computed(() => [
 <template>
   <div class="flex h-full shrink-0">
   <aside
-      class="flex shrink-0 flex-col justify-between border-r border-surface-200 bg-white/50 transition-[width] duration-200 dark:border-surface-800 dark:bg-surface-900/50"
+      class="primary-sidebar flex shrink-0 flex-col justify-between overflow-hidden border-r border-surface-200 bg-white/50 dark:border-surface-800 dark:bg-surface-900/50"
       :class="isCompact ? 'w-16' : 'w-64'"
   >
-    <div :class="isCompact ? 'space-y-4 p-2' : 'space-y-6 p-3'">
+    <div v-auto-animate="{ duration: 180, easing: 'ease-out' }" :class="isCompact ? 'space-y-4 p-2' : 'space-y-6 p-3'">
       <!-- Navigation -->
 
       <nav class="space-y-1">
@@ -105,6 +106,7 @@ const navItems = computed(() => [
             :badge="item.badge"
             :active="isActive(item)"
             :compact="isCompact"
+            @click="item.id === 'search' && selectCatalogScope(null)"
         />
       </nav>
 
@@ -131,8 +133,8 @@ const navItems = computed(() => [
               :path="folder.path"
               :name="folder.name"
               :count="folder.count"
-              :active="selectedFolder === folder.path || selectedFolder === folder.name"
-              @select="selectedFolder = $event"
+              :active="route.path === '/' && selectedFolder === folder.path"
+              @select="selectCatalogScope"
           />
         </div>
       </section>
@@ -140,7 +142,7 @@ const navItems = computed(() => [
 
     <!-- System status -->
 
-    <div>
+    <div v-auto-animate="{ duration: 180, easing: 'ease-out' }">
       <Sqlite_status v-if="!isCompact" />
       <SupportDeveloper :compact="isCompact" />
       <div class="flex p-2" :class="isCompact ? 'justify-center border-t border-surface-200 dark:border-surface-800' : 'justify-end'">
@@ -157,18 +159,19 @@ const navItems = computed(() => [
       </div>
     </div>
   </aside>
-  <Transition name="chat-sidebar">
     <aside v-if="route.path === '/ai_assistant' && chatSidebarVisible" class="chat-sidebar-panel flex min-w-0 shrink-0 flex-col overflow-hidden border-r border-surface-200 bg-surface-50/80 dark:border-surface-800 dark:bg-surface-950/40">
       <AiChatSwitcher :chats="chats" :active-key="activeChatId" :sort-mode="sortMode" @select="selectChat" @new="newChat" @rename="renameChat" @delete="deleteChat" @sort="setChatSort" />
     </aside>
-  </Transition>
   </div>
 </template>
 
 <style scoped>
-.chat-sidebar-panel { width: clamp(7rem, 24vw, 16rem); flex-basis: clamp(7rem, 24vw, 16rem); transition: width 220ms ease, flex-basis 220ms ease, opacity 180ms ease, transform 220ms ease; }
-.chat-sidebar-enter-from, .chat-sidebar-leave-to { width: 0; flex-basis: 0; opacity: 0; transform: translateX(-8px); }
-.chat-sidebar-enter-to, .chat-sidebar-leave-from { opacity: 1; transform: translateX(0); }
-@media (prefers-reduced-motion: reduce) { .chat-sidebar-panel { transition: none; } }
+.primary-sidebar { transition: width 180ms ease-out; }
+.chat-sidebar-panel { width: clamp(7rem, 24vw, 16rem); flex-basis: clamp(7rem, 24vw, 16rem); animation: sidebar-enter 140ms ease-out; }
+@keyframes sidebar-enter { from { opacity: 0; transform: translateX(-8px); } }
+@media (prefers-reduced-motion: reduce) {
+  .primary-sidebar { transition: none; }
+  .chat-sidebar-panel { animation: none; }
+}
 </style>
 

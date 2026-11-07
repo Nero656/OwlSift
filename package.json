@@ -14,7 +14,9 @@
     "electron:dev": "npm run build:electron && electron electron-build/main.js --no-sandbox",
     "electron:build": "npm run generate && npm run build:electron && electron-builder --publish never",
     "electron:build:quick": "node scripts/quick-electron-build.cjs",
-    "electron:build:zip": "node scripts/build-zip.cjs"
+    "electron:build:zip": "node scripts/build-zip.cjs",
+    "test:providers": "tsc -p tsconfig.electron.json && node --test tests/providers.test.cjs",
+    "test:search": "tsc -p tsconfig.electron.json && node --test tests/fuzzy-search.test.cjs"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",

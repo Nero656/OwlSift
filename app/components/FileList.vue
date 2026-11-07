@@ -1,5 +1,8 @@
 <script setup lang="ts">
 import FileCard from './FileCard.vue'
+import { compactFilePageSize, fileViews } from '~/utils/fileViews'
+import { fileSizeSortOptions } from '~/utils/fileSizeSort'
+import type { ContextMenuItem } from '@nuxt/ui'
 import { imageFileExtensions, scriptFileExtensions } from '~/utils/fileTypeGroups'
 import { isHiddenPath } from '../../src/utils/fileVisibility'
 import type { LocalFile } from '~/types/file'
@@ -11,6 +14,8 @@ const {
   files,
   folders,
   filteredFiles,
+  indexLoading,
+  matchesSelectedFolder,
   activeFile,
   selectedFileIds: selectedIds,
   selectedFiles: selectedDocuments,
@@ -20,10 +25,14 @@ const {
   selectedType,
   selectedFolder,
   searchQuery,
+  appliedSearchQuery,
+  searchLoading,
   allTags,
   openCreateFileDialog,
   addOneFile,
   openFileTransfer,
+  loadIndex,
+  searchIndexedFiles,
 } = useFiles()
 const dropFolderPath = computed(() => folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path)
 const attachedIds = useState<number[]>('ai-attached-document-ids', () => [])
@@ -41,20 +50,15 @@ const selectPage = () => {
 }
 const analyzeSelection = async () => { attachedIds.value = selectedDocuments.value.map(file => file.id); await navigateTo('/ai_assistant') }
 watch(selectedFolder, clearSelection)
-watch(files, () => { const existing = new Set(files.value.map(file => file.id)); selectedIds.value = selectedIds.value.filter(id => existing.has(id)) })
 const { settings } = useSettings()
 const { summarize } = useAi()
 const rightTab = useState<'chat' | 'summary'>('ai-panel-tab', () => 'chat')
 const controlsCollapsed = useState('file-management-controls-collapsed', () => false)
 onMounted(() => { controlsCollapsed.value = localStorage.getItem('file-management-controls-collapsed') === 'true' })
 watch(controlsCollapsed, value => { if (import.meta.client) localStorage.setItem('file-management-controls-collapsed', String(value)) })
-const folderScopedFiles = computed(() => files.value.filter(file => {
-  if (!settings.value.showSystemFiles && isHiddenPath(file.path)) return false
-  if (!selectedFolder.value) return true
-  const folderPath = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path ?? selectedFolder.value
-  const normalize = (value: string) => value.split(String.fromCharCode(92)).join('/').replace(/[/]$/, '')
-  return normalize(file.path) === normalize(folderPath) || normalize(file.path).startsWith(normalize(folderPath) + '/')
-}))
+const folderScopedFiles = computed(() => files.value.filter(file =>
+  (settings.value.showSystemFiles || !isHiddenPath(file.path)) && matchesSelectedFolder(file.path),
+))
 const typeCounts = computed(() => {
   const counts = new Map<string, number>()
   for (const file of folderScopedFiles.value) {
@@ -74,16 +78,14 @@ const fileView = computed({
   set: value => { settings.value.fileView = value },
 })
 const currentPage = ref(1)
-const pageSize = computed({
-  get: () => settings.value.pageSize,
-  set: value => { settings.value.pageSize = Number(value) },
-})
+const pageSize = computed(() => fileView.value === 'compact' ? compactFilePageSize : settings.value.pageSize)
 const pageCount = computed(() => Math.max(1, Math.ceil(filteredFiles.value.length / pageSize.value)))
 const pagedFiles = computed(() => filteredFiles.value.slice((currentPage.value - 1) * pageSize.value, currentPage.value * pageSize.value))
+const renderedFiles = useProgressiveRows(pagedFiles)
 const firstVisible = computed(() => filteredFiles.value.length ? (currentPage.value - 1) * pageSize.value + 1 : 0)
 const lastVisible = computed(() => Math.min(currentPage.value * pageSize.value, filteredFiles.value.length))
 
-watch([searchQuery, selectedTag, selectedType, selectedFolder], () => { currentPage.value = 1 })
+watch([appliedSearchQuery, selectedTag, selectedType, selectedFolder, pageSize, sortBy], () => { currentPage.value = 1 })
 watch(() => filteredFiles.value.length, () => { currentPage.value = 1 })
 watch(pageCount, count => { if (currentPage.value > count) currentPage.value = count })
 
@@ -93,11 +95,71 @@ const openSummary = async (file: LocalFile) => {
   rightTab.value = 'summary'
   await summarize(file)
 }
+const toast = useToast()
+const contextFolderPath = ref<string | undefined>()
+const contextBusy = ref(false)
+const captureContextFolder = (open: boolean) => {
+  if (open) contextFolderPath.value = dropFolderPath.value
+}
+const guardWorkspaceContext = (event: MouseEvent) => {
+  const target = event.target as Element | null
+  // Nested file menus own their events; Reka prevents the outer menu from opening.
+  if (target?.closest('article[data-file-card]')) return
+  if (target?.closest('[data-workspace-controls], button, a, input, textarea, select, footer, [role="menu"]')) event.preventDefault()
+}
+const runContextAction = async (action: () => Promise<unknown>) => {
+  if (contextBusy.value) return
+  contextBusy.value = true
+  try { await action() }
+  catch (error) {
+    toast.add({ title: t('workspaceActionError'), description: error instanceof Error ? error.message : String(error), color: 'error' })
+  } finally { contextBusy.value = false }
+}
+const sortOptions = computed(() => ([
+  { value: 'relevance', label: 'sortRelevance' },
+  { value: 'date', label: 'sortDate' },
+  { value: 'name', label: 'sortName' },
+  { value: 'type', label: 'sortType' },
+  { value: 'tag', label: 'sortTag' },
+  ...fileSizeSortOptions,
+] as const).map(option => ({ value: option.value, label: t(option.label) })))
+const workspaceContextItems = computed<ContextMenuItem[][]>(() => [
+  [
+    { label: t('createFile'), icon: 'i-lucide-file-plus-2', onSelect: () => { openCreateFileDialog(contextFolderPath.value) } },
+    { label: desktop.value ? t('addFileToFolder') : t('addFile'), icon: 'i-lucide-file-input', disabled: contextBusy.value, onSelect: () => { void runContextAction(() => addOneFile(contextFolderPath.value)) } },
+  ],
+  [
+    { label: t('refreshWorkspace'), icon: 'i-lucide-refresh-cw', disabled: contextBusy.value, onSelect: () => { void runContextAction(async () => { await loadIndex(); if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value) }) } },
+    { label: t('copyFolderPath'), icon: 'i-lucide-copy', disabled: !contextFolderPath.value || contextBusy.value, onSelect: () => { const path = contextFolderPath.value; if (path) void runContextAction(() => navigator.clipboard.writeText(path)) } },
+  ],
+  [
+    { label: t('selectPage'), icon: 'i-lucide-list-checks', disabled: !pagedFiles.value.length, onSelect: () => { selectPage() } },
+    { label: t('clearSelection'), icon: 'i-lucide-list-x', disabled: !selectedIds.value.length, onSelect: () => { clearSelection() } },
+  ],
+  [
+    { label: t('workspaceView'), icon: 'i-lucide-panels-top-left', children: [
+      ...fileViews.map(view => ({
+        label: t(view.label), icon: view.icon, type: 'checkbox' as const, checked: fileView.value === view.value,
+        onSelect: () => { fileView.value = view.value },
+      })),
+    ] },
+    { label: t('sortLabel'), icon: 'i-lucide-arrow-down-wide-narrow', children: [
+      ...sortOptions.value.map(option => ({
+        label: option.label, type: 'checkbox' as const, checked: sortBy.value === option.value,
+        onSelect: () => { sortBy.value = option.value },
+      })),
+    ] },
+  ],
+])
+
 </script>
 
 <template>
-  <FileDropZone :folder-path="dropFolderPath" class="min-h-0 flex-1 overflow-y-auto p-4">
-    <div class="sticky top-0 z-20 flex flex-col border border-surface-200 bg-white text-xs shadow-sm transition-[width,max-height,padding,margin,border-radius] duration-200 ease-in-out motion-reduce:transition-none dark:border-surface-700 dark:bg-surface-900" :class="controlsCollapsed ? 'mx-auto mb-3 h-10 w-10 max-h-10 items-center justify-center overflow-hidden rounded-full p-1' : 'mb-3 w-full max-h-[35dvh] gap-3 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-3'">
+  <UContextMenu :items="workspaceContextItems" :modal="false" :content="{ collisionPadding: 12 }"
+    :ui="{ content: 'z-[150] min-w-56 max-w-[calc(100vw-2rem)] max-h-[var(--reka-context-menu-content-available-height)] overflow-y-auto', item: 'cursor-pointer' }"
+    @update:open="captureContextFolder">
+  <FileDropZone data-testid="workspace-file-area" tabindex="0" role="region" :aria-label="t('workspaceContextMenu')" @contextmenu="guardWorkspaceContext" :folder-path="dropFolderPath" class="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable] p-4" :aria-busy="searchLoading">
+    <div data-workspace-controls class="sticky top-0 z-20 flex flex-col border border-surface-200 bg-white text-xs shadow-sm transition-[width,max-height,padding,margin,border-radius] duration-200 ease-in-out motion-reduce:transition-none dark:border-surface-700 dark:bg-surface-900" :class="controlsCollapsed ? 'mx-auto mb-3 h-10 w-10 max-h-10 items-center justify-center overflow-hidden rounded-full p-1' : 'mb-3 w-full max-h-[35dvh] gap-3 overflow-x-hidden overflow-y-auto overscroll-contain rounded-xl p-3'">
       <Transition name="panel-collapse">
       <div v-if="!controlsCollapsed" class="space-y-3">
       <div class="flex flex-wrap items-center gap-2">
@@ -112,30 +174,11 @@ const openSummary = async (file: LocalFile) => {
       </button>
       </div>
       <div class="flex flex-wrap items-center gap-3">
-      <div class="inline-flex rounded-lg border border-surface-200 p-1 dark:border-surface-700" role="group" :aria-label="t('search')">
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors"
-          :class="fileView === 'list' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
-          :aria-pressed="fileView === 'list'"
-          @click="fileView = 'list'"
-        >
-          <Icon name="lucide:list" size="14" />{{ t('listView') }}
-        </button>
-        <button
-          type="button"
-          class="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs transition-colors"
-          :class="fileView === 'grid' ? 'bg-primary-500/10 text-primary-600 dark:text-primary-400' : 'text-surface-500 hover:bg-surface-100 dark:hover:bg-surface-800'"
-          :aria-pressed="fileView === 'grid'"
-          @click="fileView = 'grid'"
-        >
-          <Icon name="lucide:layout-grid" size="14" />{{ t('gridView') }}
-        </button>
-      </div>
+      <FileViewSwitcher v-model="fileView" />
 
       <label class="flex min-w-0 items-center gap-2 text-xs text-surface-500">
         <span>{{ t('sortLabel') }}</span>
-        <AppDropdown v-model="sortBy" :options="[{ value: 'relevance', label: t('sortRelevance') }, { value: 'date', label: t('sortDate') }, { value: 'name', label: t('sortName') }, { value: 'type', label: t('sortType') }, { value: 'tag', label: t('sortTag') }]" class="max-w-40" />
+        <AppDropdown v-model="sortBy" :options="sortOptions" :aria-label="t('sortLabel')" class="max-w-48" />
       </label>
 
       <label class="flex min-w-0 items-center gap-2 text-xs text-surface-500">
@@ -161,8 +204,9 @@ const openSummary = async (file: LocalFile) => {
       </button>
     </div>
 
+    <IndexSkeleton v-if="(indexLoading && !filteredFiles.length) || (searchLoading && !appliedSearchQuery)" />
     <div
-        v-if="filteredFiles.length === 0"
+        v-else-if="filteredFiles.length === 0"
         class="flex h-64 flex-col items-center
              justify-center text-center"
     >
@@ -176,7 +220,7 @@ const openSummary = async (file: LocalFile) => {
         {{ t('noMatchingFiles') }}
       </p>
 
-      <p class="mt-1 text-xs text-surface-500">
+      <p v-if="appliedSearchQuery || selectedType || selectedTag" class="mt-1 text-xs text-surface-500">
         {{ t('adjustQuery') }}
       </p>
       <div class="mt-4 flex gap-2">
@@ -185,12 +229,13 @@ const openSummary = async (file: LocalFile) => {
       </div>
     </div>
 
-    <div v-else :class="fileView === 'grid' ? 'grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-3' : 'flex flex-col gap-3'">
+    <FileViewRows v-else :view="fileView">
       <FileCard
-          v-for="file in pagedFiles"
+          v-for="file in renderedFiles"
           :key="file.id"
           :file="file"
           :layout="fileView"
+          :search-query="appliedSearchQuery"
           :active="activeFile?.id === file.id"
           selectable
           :selected="selectedIds.includes(file.id)"
@@ -198,14 +243,14 @@ const openSummary = async (file: LocalFile) => {
           @select="previewSelectedDocument"
           @summary="openSummary"
       />
-    </div>
+    </FileViewRows>
 
     <footer v-if="filteredFiles.length" class="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-surface-100 pt-3 text-xs text-surface-500 dark:border-surface-800">
       <div class="flex items-center gap-2">
         <span>{{ t('showingFiles') }} {{ firstVisible }}–{{ lastVisible }} {{ t('ofFiles') }} {{ filteredFiles.length }}</span>
-        <label class="flex items-center gap-1.5">
+        <label v-if="fileView !== 'compact'" class="flex items-center gap-1.5">
           <span>{{ t('perPage') }}</span>
-          <AppDropdown v-model="pageSize" :options="[25, 50, 100].map(value => ({ value, label: String(value) }))" />
+          <AppDropdown v-model="settings.pageSize" :options="[25, 50, 100].map(value => ({ value, label: String(value) }))" />
         </label>
       </div>
       <div class="flex items-center gap-2">
@@ -216,14 +261,13 @@ const openSummary = async (file: LocalFile) => {
     </footer>
 
   </FileDropZone>
+  </UContextMenu>
 </template>
 
 <style scoped>
 .panel-collapse-enter-active,
-.panel-collapse-leave-active { overflow: hidden; transition: max-height 180ms ease, opacity 150ms ease; }
+.panel-collapse-leave-active { overflow: hidden; transition: opacity 120ms ease-out; }
 .panel-collapse-enter-from,
-.panel-collapse-leave-to { max-height: 0; opacity: 0; }
-.panel-collapse-enter-to,
-.panel-collapse-leave-from { max-height: 35dvh; opacity: 1; }
+.panel-collapse-leave-to { opacity: 0; }
 @media (prefers-reduced-motion: reduce) { .panel-collapse-enter-active, .panel-collapse-leave-active { transition: none; } }
 </style>

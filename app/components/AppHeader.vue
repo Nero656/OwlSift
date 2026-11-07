@@ -1,14 +1,29 @@
 <script setup lang="ts">
+import { getScanErrorKey } from '~/utils/scanMessages'
 import AppLogo from './AppLogo.vue'
-const { files, searchQuery, addFolder, addOneFile, openCreateFileDialog, searchIndexedFiles } = useFiles()
-const { t, language } = useLanguage()
+const { activeFile, searchQuery, addFolder, addOneFile, openCreateFileDialog, resetSearchFiltersAndSelection, searchIndexedFiles, searchLoading, invalidateSearch } = useFiles()
+const { t, language, formatNumber } = useLanguage()
+const selectedExtension = computed(() => {
+  const extension = activeFile.value?.extension.trim().replace(/^\.+/, '').toLowerCase()
+  return extension ? '.' + extension : ''
+})
 const { settings, setTheme } = useSettings()
 const { connectionStatus } = useAi()
-const isGlobalConnected = computed(() => settings.value.modelProvider === 'global' && connectionStatus.value === 'ok')
-const isLocalConnected = computed(() => settings.value.modelProvider === 'local' && settings.value.localModel.enabled && connectionStatus.value === 'ok')
+const isGlobalConnected = computed(() => settings.value.modelProvider === 'global' && settings.value.globalModel.enabled && connectionStatus.value === 'ok')
+const isLocalConnected = computed(() => settings.value.modelProvider === 'local' && settings.value.localModels[settings.value.localProvider].enabled && connectionStatus.value === 'ok')
 const isIndexing = ref(false)
 const searchShortcut = ref('Ctrl+K')
 const searchInput = ref<HTMLInputElement | null>(null)
+const route = useRoute()
+const showFileSearch = computed(() => route.path === '/' || route.path === '/documents')
+const { isScanning: isScanningDocuments } = useDocumentScanActivity()
+const documentSearchQuery = useState('documents-search-query', () => '')
+const documentSearchLoading = useState('documents-search-loading', () => false)
+const headerSearchQuery = computed({
+  get: () => route.path === '/documents' ? documentSearchQuery.value : searchQuery.value,
+  set: value => { if (route.path === '/documents') documentSearchQuery.value = value; else searchQuery.value = value },
+})
+const headerSearchLoading = computed(() => route.path === '/documents' ? documentSearchLoading.value : searchLoading.value)
 const indexNotice = ref('')
 let usesMetaShortcut = false
 let searchTimer: ReturnType<typeof setTimeout> | undefined
@@ -18,9 +33,11 @@ const handleSearchShortcut = (event: KeyboardEvent) => {
   const modifierPressed = usesMetaShortcut ? event.metaKey : event.ctrlKey
   if (!modifierPressed || event.altKey || event.key.toLowerCase() !== 'k') return
 
+  const input = showFileSearch.value ? searchInput.value : document.querySelector<HTMLInputElement>('[data-file-search-input]')
+  if (!input) return
   event.preventDefault()
-  searchInput.value?.focus()
-  searchInput.value?.select()
+  input.focus()
+  input.select()
 }
 
 onMounted(() => {
@@ -33,12 +50,22 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleSearchShortcut)
   if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
+  if (searchTimer) clearTimeout(searchTimer)
+  invalidateSearch()
 })
 
-watch(searchQuery, (query) => {
+watch([() => route.path, searchQuery, isScanningDocuments], ([path, query, scanning]) => {
   if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => void searchIndexedFiles(query), 250)
-})
+  invalidateSearch()
+  if (path !== '/') return
+  if (!query.trim()) { void searchIndexedFiles(''); return }
+  if (scanning) return
+  searchLoading.value = true
+  searchTimer = setTimeout(() => {
+    resetSearchFiltersAndSelection()
+    void searchIndexedFiles(query).catch(error => console.error('Could not search indexed files:', error))
+  }, 250)
+}, { flush: 'sync' })
 
 const handleAddFolder = async () => {
   if (isIndexing.value) return
@@ -48,14 +75,13 @@ const handleAddFolder = async () => {
     const result = await addFolder()
     if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
     if (result) {
-      indexNotice.value = result.indexedCount === 0
-        ? t('folderNoFilesIndexed')
-        : `${t('folderFilesIndexed')} ${result.indexedCount}${result.skippedCount ? `. ${t('folderLimitReached')} ${result.skippedCount}` : ''}`
+      indexNotice.value = t('folderFilesIndexed') + ' ' + formatNumber(result.indexedCount) + ' · ' +
+        t('scanDocumentsSkipped') + ' ' + formatNumber(result.skippedCount)
     }
     if (indexNotice.value) indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
   } catch (error) {
     console.error('Could not index selected folder:', error)
-    indexNotice.value = t('folderIndexError')
+    indexNotice.value = t(getScanErrorKey(error))
     if (indexNoticeTimer) clearTimeout(indexNoticeTimer)
     indexNoticeTimer = setTimeout(() => { indexNotice.value = '' }, 7000)
   } finally {
@@ -117,15 +143,22 @@ const handleAddFile = async () => {
           </span>
         </div>
 
-        <p class="-mt-1 text-[11px] text-surface-500 dark:text-surface-400">
-          Local-first AI Search
-        </p>
+        <div class="-mt-1 flex items-center gap-2 text-[11px] text-surface-500 dark:text-surface-400">
+          <span class="whitespace-nowrap">Local-first AI Search</span>
+          <output
+            v-if="selectedExtension"
+            dir="ltr"
+            class="max-w-16 truncate rounded bg-primary-500/10 px-1 font-mono text-primary-700 dark:text-primary-300"
+            :aria-label="t('fileType')"
+            :title="selectedExtension"
+          >{{ selectedExtension }}</output>
+        </div>
       </div>
     </div>
 
     <!-- Search -->
 
-    <div class="max-w-2xl flex-1 px-4">
+    <div v-if="showFileSearch" class="min-w-0 max-w-2xl flex-1 px-4">
       <div class="relative">
         <Icon
             name="lucide:search"
@@ -136,12 +169,14 @@ const handleAddFile = async () => {
 
         <input
             ref="searchInput"
-            v-model="searchQuery"
+            data-file-search-input
+            v-model="headerSearchQuery"
             type="text"
             :placeholder="t('searchPlaceholder')"
-            class="w-full rounded-xl border border-transparent
+            :aria-busy="headerSearchLoading"
+            class="w-full min-w-0 rounded-xl border border-transparent
                  bg-surface-100 py-2 pl-10 pr-20 text-sm
-                 outline-none transition-all
+                 outline-none transition-colors duration-150 motion-reduce:transition-none
                  placeholder:text-surface-400
                  focus:border-primary-500
                  focus:ring-2 focus:ring-primary-500/20
@@ -164,15 +199,6 @@ const handleAddFile = async () => {
 
     <div class="flex items-center gap-3">
       <span v-if="indexNotice" class="max-w-56 text-xs text-amber-600 dark:text-amber-400" role="status">{{ indexNotice }}</span>
-      <div
-          class="hidden items-center gap-2 rounded-lg
-               bg-surface-100 px-3 py-1.5 text-xs
-               text-surface-600 dark:bg-surface-800
-               dark:text-surface-300 md:flex"
-      >
-        <span class="h-2 w-2 animate-pulse rounded-full bg-primary-500" />
-        {{ t('indexed') }} <strong>{{ files.length }}</strong> {{ t('files') }}
-      </div>
 
       <button
           class="flex items-center gap-2 rounded-xl
@@ -207,16 +233,22 @@ const handleAddFile = async () => {
       </button>
 
       <button
-          class="rounded-xl p-2 text-surface-500 transition
-               hover:bg-surface-100 hover:text-surface-700
-               dark:text-surface-400 dark:hover:bg-surface-800
-               dark:hover:text-surface-200"
+          type="button"
+          class="inline-grid size-9 shrink-0 place-items-center rounded-xl text-surface-600 transition-colors
+               hover:bg-surface-100 hover:text-surface-900
+               focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary
+               dark:text-surface-300 dark:hover:bg-surface-800 dark:hover:text-surface-100"
+          :title="t(isDark ? 'lightTheme' : 'darkTheme')"
+          :aria-label="t(isDark ? 'lightTheme' : 'darkTheme')"
           @click="toggleTheme"
       >
-        <Icon
-            :name="isDark ? 'lucide:sun' : 'lucide:moon'"
-            size="20"
-        />
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <g v-if="isDark">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2m0 16v2M2 12h2m16 0h2M4.93 4.93l1.42 1.42m11.3 11.3 1.42 1.42m0-14.14-1.42 1.42m-11.3 11.3-1.42 1.42" />
+          </g>
+          <path v-else d="M20.99 13.18a9 9 0 1 1-10.17-10.17 7 7 0 0 0 10.17 10.17Z" />
+        </svg>
       </button>
     </div>
   </header>

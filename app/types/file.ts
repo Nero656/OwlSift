@@ -4,10 +4,12 @@ export interface LocalFile {
     path: string
     extension: string
     size: string
+    sizeBytes?: number
     mtime: string
     mtimeValue?: number
     tags: string[]
     snippet: string
+    contentMatch?: string
     summary: string
     note: string
     content?: string
@@ -31,6 +33,7 @@ export interface ChatFileReference {
 export interface ChatMessage {
     createdAt?: number
     provider?: 'comfy'
+    modelProvider?: 'ollama' | 'lmstudio' | 'global'
     mediaGeneration?: { provider: 'comfy'; jobId: string; kind: 'image' | 'audio' | 'video'; execution: 'local' | 'cloud' | 'unverified'; prompt?: string }
     sender: 'user' | 'ai'
     text: string
