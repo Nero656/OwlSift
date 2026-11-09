@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const modelIpc_1 = require("./services/modelIpc");
 const comfyTransport_1 = require("./services/comfyTransport");
 const electron_1 = require("electron");
 const path_1 = __importDefault(require("path"));
@@ -52,6 +53,7 @@ function createWindow() {
     }
 }
 electron_1.app.whenReady().then(() => {
+    (0, modelIpc_1.registerModelIpc)(electron_1.ipcMain);
     if (electron_1.app.isPackaged) {
         const root = path_1.default.join(process.resourcesPath, 'app');
         electron_1.protocol.handle('localmind', request => {
@@ -107,35 +109,71 @@ electron_1.app.whenReady().then(() => {
     electron_1.ipcMain.handle('comfy:request', (_event, request) => (0, comfyTransport_1.requestComfy)(request));
     electron_1.ipcMain.handle('app:get-version', () => electron_1.app.getVersion());
     electron_1.ipcMain.handle('db:get-status', () => sqlite_1.dbManager.getStatus());
-    electron_1.ipcMain.handle('files:set-system-visibility', (_event, include) => sqlite_1.dbManager.setSystemFileVisibility(include));
-    electron_1.ipcMain.handle('files:list', () => sqlite_1.dbManager.listFiles());
-    electron_1.ipcMain.handle('files:open', async (_event, fileId) => {
+    electron_1.ipcMain.handle('db:list-indexes', () => sqlite_1.dbManager.listIndexes());
+    electron_1.ipcMain.handle('db:create-index', (_event, name) => sqlite_1.dbManager.createIndex(name));
+    electron_1.ipcMain.handle('db:set-scan-mode', (_event, mode) => sqlite_1.dbManager.setScanMode(mode));
+    let indexOperations = 0;
+    const handleIndexOperation = (channel, handler) => {
+        electron_1.ipcMain.handle(channel, async (event, ...args) => {
+            indexOperations++;
+            try {
+                return await handler(event, ...args);
+            }
+            finally {
+                indexOperations--;
+            }
+        });
+    };
+    electron_1.ipcMain.handle('db:switch-index', (_event, id) => {
+        if (indexOperations)
+            throw new Error('Wait for indexing or file operations to finish.');
+        sqlite_1.dbManager.switchIndex(id);
+    });
+    electron_1.ipcMain.handle('db:delete-index', async (_event, request) => {
+        const index = sqlite_1.dbManager.listIndexes().indexes.find(item => item.id === request.id);
+        if (!index)
+            throw new Error('Index not found.');
+        const ru = request.language === 'ru';
+        const { response } = await electron_1.dialog.showMessageBox(win, {
+            type: 'warning',
+            message: ru ? 'Удалить индекс «' + index.name + '»?' : 'Delete the index “' + index.name + '”?',
+            detail: ru ? 'Будет удалена только база индекса. Исходные файлы останутся на диске.' : 'Only the index database will be deleted. Your original files will remain untouched.',
+            buttons: ru ? ['Отмена', 'Удалить индекс'] : ['Cancel', 'Delete index'],
+            defaultId: 0,
+            cancelId: 0,
+        });
+        if (response === 1)
+            sqlite_1.dbManager.deleteIndex(index.id);
+    });
+    handleIndexOperation('files:set-system-visibility', (_event, include) => sqlite_1.dbManager.setSystemFileVisibility(include));
+    handleIndexOperation('files:list', () => sqlite_1.dbManager.listFiles());
+    handleIndexOperation('files:open', async (_event, fileId) => {
         const error = await electron_1.shell.openPath(sqlite_1.dbManager.getFilePath(fileId));
         if (error)
             throw new Error(error);
     });
-    electron_1.ipcMain.handle('files:rename', (_event, data) => sqlite_1.dbManager.renameIndexedFile(data.fileId, data.name));
-    electron_1.ipcMain.handle('files:show-in-folder', (_event, fileId) => {
+    handleIndexOperation('files:rename', (_event, data) => sqlite_1.dbManager.renameIndexedFile(data.fileId, data.name));
+    handleIndexOperation('files:show-in-folder', (_event, fileId) => {
         electron_1.shell.showItemInFolder(sqlite_1.dbManager.getFilePath(fileId));
     });
     // This action only hides the record from OwlSift. It never removes the disk file.
-    electron_1.ipcMain.handle('files:delete', (_event, data) => sqlite_1.dbManager.removeFileRecord(data.fileId));
-    electron_1.ipcMain.handle('files:get-image-preview', (_event, fileId) => sqlite_1.dbManager.getImagePreview(fileId));
-    electron_1.ipcMain.handle('files:folders', () => sqlite_1.dbManager.listFolders());
-    electron_1.ipcMain.handle('files:search', (_event, query) => sqlite_1.dbManager.search(query));
-    electron_1.ipcMain.handle('files:search-documents', (_event, query) => sqlite_1.dbManager.search(query, 10000));
-    electron_1.ipcMain.handle('files:list-scan-drives', () => sqlite_1.dbManager.listScanDrives());
-    electron_1.ipcMain.handle('files:scan-os-documents', (_event, data) => sqlite_1.dbManager.scanOsDocuments(data.drivePath, data.extensions, data.folderPaths, data.resume));
-    electron_1.ipcMain.handle('files:document-scan-status', () => sqlite_1.dbManager.documentScanStatus());
-    electron_1.ipcMain.handle('files:stop-document-scan', () => sqlite_1.dbManager.stopDocumentScan());
-    electron_1.ipcMain.handle('files:choose-scan-folders', async (_event, data) => {
+    handleIndexOperation('files:delete', (_event, data) => sqlite_1.dbManager.removeFileRecord(data.fileId));
+    handleIndexOperation('files:get-image-preview', (_event, fileId) => sqlite_1.dbManager.getImagePreview(fileId));
+    handleIndexOperation('files:folders', () => sqlite_1.dbManager.listFolders());
+    handleIndexOperation('files:search', (_event, query) => sqlite_1.dbManager.search(query));
+    handleIndexOperation('files:search-documents', (_event, query) => sqlite_1.dbManager.search(query, 10000));
+    handleIndexOperation('files:list-scan-drives', () => sqlite_1.dbManager.listScanDrives());
+    handleIndexOperation('files:scan-os-documents', (_event, data) => sqlite_1.dbManager.scanOsDocuments(data.drivePath, data.extensions, data.folderPaths, data.resume, data.mode, data.additionalDrivePaths));
+    handleIndexOperation('files:document-scan-status', () => sqlite_1.dbManager.documentScanStatus());
+    handleIndexOperation('files:stop-document-scan', () => sqlite_1.dbManager.stopDocumentScan());
+    handleIndexOperation('files:choose-scan-folders', async (_event, data) => {
         const [root] = await sqlite_1.dbManager.documentScanRoots(data.drivePath);
         const result = await electron_1.dialog.showOpenDialog(win, { defaultPath: root, properties: ['openDirectory', 'multiSelections'] });
         if (result.canceled || !result.filePaths.length)
             return null;
         return sqlite_1.dbManager.documentScanRoots(data.drivePath, result.filePaths);
     });
-    electron_1.ipcMain.handle('files:choose-and-index', async (_event, data = {}) => {
+    handleIndexOperation('files:choose-and-index', async (_event, data = {}) => {
         const result = await electron_1.dialog.showOpenDialog(win, {
             properties: ['openDirectory']
         });
@@ -143,22 +181,27 @@ electron_1.app.whenReady().then(() => {
             return null;
         return sqlite_1.dbManager.indexFolder(result.filePaths[0], data.maxFiles);
     });
-    electron_1.ipcMain.handle('folders:default-location', () => electron_1.app.getPath('desktop'));
-    electron_1.ipcMain.handle('folders:choose-parent', async () => {
+    handleIndexOperation('folders:index-drop', (_event, data) => {
+        if (!Array.isArray(data?.paths))
+            throw new Error('Invalid folder drop');
+        return sqlite_1.dbManager.indexDroppedFolders(data.paths, data.maxFiles);
+    });
+    handleIndexOperation('folders:default-location', () => electron_1.app.getPath('desktop'));
+    handleIndexOperation('folders:choose-parent', async () => {
         const result = await electron_1.dialog.showOpenDialog(win, { properties: ['openDirectory'], defaultPath: electron_1.app.getPath('desktop') });
         return result.canceled ? null : result.filePaths[0] ?? null;
     });
-    electron_1.ipcMain.handle('folders:create', (_event, data) => sqlite_1.dbManager.createWorkspaceFolder(data.parentPath, data.name));
-    electron_1.ipcMain.handle('files:transfer-workspace', (_event, data) => sqlite_1.dbManager.transferWorkspaceFiles(data));
-    electron_1.ipcMain.handle('files:import-drop', async (_event, data) => {
+    handleIndexOperation('folders:create', (_event, data) => sqlite_1.dbManager.createWorkspaceFolder(data.parentPath, data.name));
+    handleIndexOperation('files:transfer-workspace', (_event, data) => sqlite_1.dbManager.transferWorkspaceFiles(data));
+    handleIndexOperation('files:import-drop', async (_event, data) => {
         if (!path_1.default.isAbsolute(data.filePath))
             throw new Error('Invalid file');
         if (data.folderPath)
             return sqlite_1.dbManager.importFileToWorkspace(data.filePath, data.folderPath, data.maxFiles);
-        sqlite_1.dbManager.indexSingleFile(data.filePath);
+        await sqlite_1.dbManager.indexImportedFile(data.filePath);
         return data.filePath;
     });
-    electron_1.ipcMain.handle('files:choose-and-index-file', async (_event, data = {}) => {
+    handleIndexOperation('files:choose-and-index-file', async (_event, data = {}) => {
         const result = await electron_1.dialog.showOpenDialog(win, { properties: ['openFile', 'multiSelections'], defaultPath: data.folderPath });
         if (result.canceled || !result.filePaths.length)
             return null;
@@ -168,7 +211,7 @@ electron_1.app.whenReady().then(() => {
                 if (data.folderPath)
                     await sqlite_1.dbManager.importFileToWorkspace(source, data.folderPath, data.maxFiles);
                 else
-                    sqlite_1.dbManager.indexSingleFile(source);
+                    await sqlite_1.dbManager.indexImportedFile(source);
                 indexedCount++;
             }
             catch {
@@ -177,18 +220,21 @@ electron_1.app.whenReady().then(() => {
         }
         return { folderPath: data.folderPath ?? path_1.default.dirname(result.filePaths[0]), indexedCount, skippedCount, limit: data.maxFiles ?? 1000 };
     });
-    electron_1.ipcMain.handle('files:create-in-folder', (_event, data) => {
+    handleIndexOperation('files:create-in-folder', (_event, data) => {
         return sqlite_1.dbManager.createFileInFolder(data.folderPath, data.fileName, data.content ?? '', data.bytes ? Buffer.from(data.bytes) : undefined);
     });
-    electron_1.ipcMain.handle('files:edit-content', (_event, data) => {
+    handleIndexOperation('files:edit-content', (_event, data) => {
         sqlite_1.dbManager.editIndexedFile(data.fileId, data.content, Buffer.from(data.bytes), data.expectedMtime);
     });
-    electron_1.ipcMain.handle('files:get-bytes', (_event, fileId) => Array.from(node_fs_1.default.readFileSync(sqlite_1.dbManager.getFilePath(fileId))));
-    electron_1.ipcMain.handle('files:get-content', (_event, fileId) => sqlite_1.dbManager.getFileContent(fileId));
-    electron_1.ipcMain.handle('files:add-tag', (_event, data) => sqlite_1.dbManager.addFileTag(data.fileId, data.tag));
-    electron_1.ipcMain.handle('files:remove-tag', (_event, data) => sqlite_1.dbManager.removeFileTag(data.fileId, data.tag));
-    electron_1.ipcMain.handle('files:set-note', (_event, data) => sqlite_1.dbManager.setFileNote(data.fileId, data.note));
-    electron_1.ipcMain.handle('files:delete-from-disk', async (_event, data) => {
+    handleIndexOperation('files:get-bytes', async (_event, fileId) => {
+        const bytes = await node_fs_1.default.promises.readFile(sqlite_1.dbManager.getFilePath(fileId));
+        return Uint8Array.from(bytes).buffer;
+    });
+    handleIndexOperation('files:get-content', (_event, fileId) => sqlite_1.dbManager.getFileContent(fileId));
+    handleIndexOperation('files:add-tag', (_event, data) => sqlite_1.dbManager.addFileTag(data.fileId, data.tag));
+    handleIndexOperation('files:remove-tag', (_event, data) => sqlite_1.dbManager.removeFileTag(data.fileId, data.tag));
+    handleIndexOperation('files:set-note', (_event, data) => sqlite_1.dbManager.setFileNote(data.fileId, data.note));
+    handleIndexOperation('files:delete-from-disk', async (_event, data) => {
         const filePath = sqlite_1.dbManager.getFilePath(data.fileId);
         if (data.mode === 'permanent')
             node_fs_1.default.unlinkSync(filePath);
@@ -196,7 +242,7 @@ electron_1.app.whenReady().then(() => {
             await electron_1.shell.trashItem(filePath);
         sqlite_1.dbManager.removeFileRecord(data.fileId);
     });
-    electron_1.ipcMain.handle('folders:remove-from-index', (_event, folderPath) => sqlite_1.dbManager.removeFolderFromIndex(folderPath));
+    handleIndexOperation('folders:remove-from-index', (_event, folderPath) => sqlite_1.dbManager.removeFolderFromIndex(folderPath));
     electron_1.ipcMain.on('app:minimize', () => {
         win?.minimize();
     });

@@ -7,13 +7,21 @@ const allowedSendChannels = [
     'app:close'
 ];
 const allowedInvokeChannels = [
+    'ai:request',
+    'ai:cancel',
     'comfy:request',
     'app:open-donation',
     'app:open-ai-doc',
     'app:open-external',
     'files:import-drop',
+    'folders:index-drop',
     'app:get-version',
     'db:get-status',
+    'db:list-indexes',
+    'db:create-index',
+    'db:switch-index',
+    'db:delete-index',
+    'db:set-scan-mode',
     'files:list',
     'files:set-system-visibility',
     'files:add-tag',
@@ -46,6 +54,7 @@ const allowedInvokeChannels = [
     'folders:remove-from-index'
 ];
 const allowedOnChannels = [
+    'ai:chunk',
     'app:message'
 ];
 const electronAPI = {
