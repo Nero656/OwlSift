@@ -1,10 +1,14 @@
 <script setup lang="ts">
+import { fileViews } from '~/utils/fileViews'
 import { getLanguageName, supportedLanguages } from '~/composables/useLanguage'
-import type { GlobalApiProvider } from '~/composables/useSettings'
+import { documentPageSizes, type GlobalApiProvider } from '~/composables/useSettings'
 const { language, setLanguage, t } = useLanguage()
 const { maxFilesPerFolder } = useFiles()
 const { settings, reset } = useSettings()
-const { testConnection, connectionStatus, availableModels, lastError } = useAi()
+const { testConnection, connections } = useAi()
+const connectionStatus = computed(() => connections.value.global.status)
+const availableModels = computed(() => connections.value.global.models)
+const lastError = computed(() => connections.value.global.error)
 const activeTab = useState<string | number>('settings-active-tab', () => 'general')
 const tabs = computed(() => [
   { label: t('generalTab'), value: 'general', slot: 'general' as const, icon: 'i-lucide-settings-2' },
@@ -20,18 +24,7 @@ onBeforeUnmount(() => { if (savedTimer) clearTimeout(savedTimer) })
 const globalApiHost = computed(() => {
   try { return new URL(settings.value.globalModel.endpoint.trim()).host } catch { return '' }
 })
-const canTestModel = computed(() => settings.value.modelProvider === 'global' ? Boolean(settings.value.globalModel.endpoint.trim()) : settings.value.localModel.enabled && Boolean(settings.value.localModel.endpoint.trim()))
-const localProviderSelection = computed({
-  get: () => settings.value.localModel.provider,
-  set: (provider: 'lmstudio' | 'ollama') => {
-    const config = settings.value.localModel
-    const knownEndpoints = ['http://127.0.0.1:1234/v1', 'http://localhost:11434', 'http://127.0.0.1:11434']
-    const currentEndpoint = config.endpoint.replace(/\/+$/, '')
-    config.provider = provider
-    if (!currentEndpoint || knownEndpoints.includes(currentEndpoint)) config.endpoint = provider === 'ollama' ? 'http://localhost:11434' : 'http://127.0.0.1:1234/v1'
-    config.model = ''
-  },
-})
+const canTestModel = computed(() => settings.value.modelProvider === 'global' ? settings.value.globalModel.enabled && Boolean(settings.value.globalModel.endpoint.trim()) : settings.value.localModels[settings.value.localProvider].enabled && Boolean(settings.value.localModels[settings.value.localProvider].endpoint.trim()))
 
 watch(settings, () => {
   savedLabel.value = t('settingsSaved')
@@ -68,7 +61,7 @@ watch(() => settings.value.globalModel.apiKey, key => {
 const checkModel = async () => {
   isTesting.value = true
   try {
-    await testConnection()
+    await testConnection('global')
   } catch {
     // lastError is set in useAi
   } finally {
@@ -124,14 +117,18 @@ const checkModel = async () => {
           </section>
         </template>
         <template #files>
+          <IndexDatabaseSettings />
           <section class="rounded-2xl border border-surface-200 bg-white p-4 sm:p-6 dark:border-surface-800 dark:bg-surface-900">
             <h2 class="text-sm font-semibold">{{ t('filesTab') }}</h2>
             <div class="mt-4 grid gap-5 sm:grid-cols-2">
               <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('defaultFileView') }}
-                <AppDropdown v-model="settings.fileView" :options="[{ value: 'grid', label: t('gridView') }, { value: 'list', label: t('listView') }]" class="mt-2 w-full" />
+                <AppDropdown v-model="settings.fileView" :options="fileViews.map(view => ({ value: view.value, label: t(view.label) }))" class="mt-2 w-full" />
               </label>
               <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('filesPerPage') }}
                 <AppDropdown v-model="settings.pageSize" :options="[25, 50, 100].map(value => ({ value, label: String(value) }))" class="mt-2 w-full" />
+              </label>
+              <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('documentResultsPerPage') }}
+                <AppDropdown v-model="settings.documentPageSize" :options="documentPageSizes.map(value => ({ value, label: String(value) }))" :aria-label="t('documentResultsPerPage')" class="mt-2 w-full" />
               </label>
               <UCheckbox v-model="settings.showThumbnails" :label="t('showThumbnails')" :aria-label="t('showThumbnails')" :description="t('showThumbnailsDescription')" indicator="end" size="lg" class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
               <UCheckbox v-model="settings.showSystemFiles" :label="t('showSystemFiles')" :aria-label="t('showSystemFiles')" :description="t('showSystemFilesDescription')" indicator="end" size="lg" class="flex items-center justify-between gap-3 text-sm text-surface-700 dark:text-surface-300 sm:col-span-2" :ui="{ wrapper: 'flex-1', label: 'font-medium', description: 'text-xs' }" />
@@ -151,32 +148,14 @@ const checkModel = async () => {
             </label>
 
             <template v-if="settings.modelProvider === 'local'">
-              <div class="mt-5 flex items-start justify-between gap-4">
-                <div>
-                  <h3 class="text-sm font-semibold text-surface-900 dark:text-surface-100">{{ t('localModelTitle') }}</h3>
-                  <p class="mt-1 text-xs text-surface-500">{{ settings.localModel.provider === 'ollama' ? t('ollamaModelDescription') : t('localModelDescription') }}</p>
-                </div>
-                <UCheckbox v-model="settings.localModel.enabled" size="lg" class="mt-1" :aria-label="t('localModelTitle')" />
-              </div>
-              <div class="mt-5 grid gap-4 sm:grid-cols-2" :class="!settings.localModel.enabled && 'opacity-50'">
-                <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('localBackend') }}
-                  <AppDropdown v-model="localProviderSelection" :options="[{ value: 'lmstudio', label: 'LM Studio' }, { value: 'ollama', label: 'Ollama' }]" :disabled="!settings.localModel.enabled" class="mt-2 w-full max-w-md" />
-                </label>
-                <label class="text-sm text-surface-700 dark:text-surface-300">{{ t('modelEndpoint') }}
-                  <input v-model.trim="settings.localModel.endpoint" :disabled="!settings.localModel.enabled" type="url"  :placeholder="settings.localModel.provider === 'ollama' ? 'http://localhost:11434' : 'http://127.0.0.1:1234/v1'" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800">
-                </label>
-                <label v-if="connectionStatus === 'ok'" class="text-sm text-surface-700 dark:text-surface-300">{{ t('modelName') }}
-                  <AppDropdown v-model="settings.localModel.model" :options="availableModels.map(value => ({ value, label: value }))" :placeholder="availableModels.length ? t('selectModel') : t('noModelsFound')" :disabled="availableModels.length === 0" class="mt-2 w-full" />
-                </label>
-                <p v-else class="self-end text-xs text-surface-500 sm:pb-3">{{ t('connectToChooseModel') }}</p>
-                <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('systemPrompt') }}
-                  <textarea v-model="settings.localModel.systemPrompt" :disabled="!settings.localModel.enabled" rows="3" class="mt-2 block w-full rounded-xl border border-surface-200 bg-surface-50 px-3 py-2.5 dark:border-surface-700 dark:bg-surface-800" />
-                </label>
-              </div>
+          <LocalProviderSettings />
         </template>
 
         <div v-else class="mt-5 grid gap-4 sm:grid-cols-2">
-          <p class="text-sm text-surface-600 dark:text-surface-300 sm:col-span-2">{{ t('globalModelDescription') }}</p>
+          <div class="flex items-start justify-between gap-4 sm:col-span-2">
+            <p class="text-sm text-surface-600 dark:text-surface-300">{{ t('globalModelDescription') }}</p>
+            <UCheckbox v-model="settings.globalModel.enabled" :label="t('enableProvider')" :aria-label="t('enableGlobalProvider')" class="shrink-0" />
+          </div>
           <label class="text-sm text-surface-700 dark:text-surface-300 sm:col-span-2">{{ t('modelProvider') }}
             <AppDropdown v-model="globalProviderSelection" :options="[
               { value: 'openai', label: 'OpenAI' },
@@ -201,14 +180,14 @@ const checkModel = async () => {
           <p class="text-xs text-amber-600 dark:text-amber-400 sm:col-span-2">{{ t('globalApiHint') }}</p>
         </div>
 
-        <div class="mt-4 flex flex-wrap items-center gap-3">
+        <div v-if="settings.modelProvider === 'global'" class="mt-4 flex flex-wrap items-center gap-3">
           <button type="button" class="rounded-xl bg-primary-600 px-3.5 py-2 text-xs font-semibold text-white disabled:opacity-50" :disabled="!canTestModel || isTesting" @click="checkModel">
-            {{ isTesting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? (settings.localModel.provider === 'ollama' ? t('connectOllama') : t('connectLmStudio')) : t('testConnection')) }}
+            {{ isTesting ? t('sqliteChecking') : t('testConnection') }}
           </button>
           <p v-if="connectionStatus === 'ok'" class="text-xs text-primary-600">{{ t('connectionOk') }} {{ availableModels.length }}</p>
           <p v-else-if="connectionStatus === 'error'" class="text-xs text-rose-500">{{ lastError }}</p>
         </div>
-        <AiConnectionGuide :provider="settings.modelProvider" :local-provider="settings.localModel.provider" />
+        <AiConnectionGuide :provider="settings.modelProvider" :local-provider="settings.localProvider" />
       </section>
         </template>
         <template #comfy><ComfySettings v-if="activeTab === 'comfy'" /></template>

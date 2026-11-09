@@ -1,10 +1,14 @@
+import { searchableTextExtensions } from '../../src/utils/fileTypeGroups'
+import type { BrowserSearchRequest, BrowserSearchResponse } from '../workers/fileSearch.worker'
 import type { WorkspaceTransferMode } from '../../src/types/workspace'
 import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibility'
+import { compareFileSizes } from '../utils/fileSizeSort'
 import { imageFileExtensions, scriptFileExtensions } from '../utils/fileTypeGroups'
 import type { IndexedFolder, LocalFile, ChatMessage } from '../types/file'
 import { createDocumentBlob, extractDocumentText, removeDocumentBlob, storeDocumentBlob } from '../utils/documents'
 import { creatableFileTypes, defaultFileTemplate } from './useFileTypes'
 import { useLanguage } from './useLanguage'
+import { useDocumentScanActivity } from './useDocumentScan'
 
 interface IndexedFileRecord {
   id: number
@@ -14,6 +18,7 @@ interface IndexedFileRecord {
   size: number
   mtime: number
   snippet: string
+  contentMatch?: string
   tags: string[]
   note: string
   content?: string
@@ -21,7 +26,7 @@ interface IndexedFileRecord {
 
 const browserStorageKey = 'localmind-browser-files'
 const browserFoldersKey = 'localmind-browser-folders'
-const textExtensions = new Set(['tsv', 'txt', 'md', 'markdown', 'csv', 'json', 'xml', 'html', 'htm', 'js', 'ts', 'vue', 'css', 'scss', 'yaml', 'yml', 'log', 'sql', 'py', 'java', 'c', 'cpp', 'h', 'sh'])
+const editableTextExtensions = new Set(['tsv', 'txt', 'md', 'markdown', 'csv', 'json', 'xml', 'html', 'htm', 'js', 'ts', 'vue', 'css', 'scss', 'yaml', 'yml', 'log', 'sql', 'py', 'java', 'c', 'cpp', 'h', 'sh'])
 const defaultBrowserFolderPath = 'Browser/Workspace'
 
 function formatFileSize(bytes: number): string {
@@ -30,11 +35,11 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
-function toLocalFile(file: IndexedFileRecord, locale: string): LocalFile {
+function toLocalFile(file: IndexedFileRecord, dateFormat: Intl.DateTimeFormat): LocalFile {
   return {
     id: file.id, name: file.name, path: file.path, extension: file.extension,
-    size: formatFileSize(file.size), mtime: new Date(file.mtime).toLocaleDateString(locale), mtimeValue: file.mtime,
-    tags: file.tags, snippet: file.snippet, summary: '', note: file.note ?? '', content: file.content,
+    size: formatFileSize(file.size), sizeBytes: file.size, mtime: Number.isFinite(file.mtime) ? dateFormat.format(file.mtime) : '', mtimeValue: file.mtime,
+    tags: file.tags, snippet: file.snippet, contentMatch: file.contentMatch, summary: '', note: file.note ?? '', content: file.content,
   }
 }
 
@@ -65,8 +70,10 @@ async function createImageThumbnail(file: File): Promise<string | undefined> {
   }
 }
 
-export const useFiles = () => {
+const createFiles = () => {
   const { language } = useLanguage()
+  const dateFormat = computed(() => new Intl.DateTimeFormat(language.value))
+  const formatDate = (timestamp: number) => dateFormat.value.format(timestamp)
   const { settings } = useSettings()
   const excludedBySettings = (path: string) => !settings.value.showSystemFiles && isHiddenPath(path)
   const excludedFromUserLists = (path: string) => excludedBySettings(path) || isAuxiliaryFilePath(path)
@@ -76,17 +83,32 @@ export const useFiles = () => {
   const syncSystemFilesPreference = async () => {
     if (isDesktop()) await window.electron.invoke('files:set-system-visibility', settings.value.showSystemFiles)
   }
-  const files = useState<LocalFile[]>('files', () => [])
+  const files = useState<LocalFile[]>('files', () => shallowRef<LocalFile[]>([]))
   const folders = useState<IndexedFolder[]>('indexed-folders', () => [])
-  const searchResults = useState<LocalFile[] | null>('file-search-results', () => null)
+  const searchResults = useState<LocalFile[] | null>('file-search-results', () => shallowRef<LocalFile[] | null>(null))
   const searchQuery = useState('search-query', () => '')
+  const appliedSearchQuery = useState('applied-search-query', () => '')
+  const searchLoading = useState('file-search-loading', () => false)
+  const { isScanning: isScanningDocuments } = useDocumentScanActivity()
+  const searchRequestId = useState('file-search-request-id', () => 0)
+  const invalidateSearch = () => { searchRequestId.value++; searchLoading.value = false }
   const selectedType = useState<string | null>('selected-file-type', () => null)
   const selectedTag = useState<string | null>('selected-file-tag', () => null)
   const selectedFolder = useState<string | null>('selected-folder', () => null)
   const sortBy = useState('file-sort', () => 'relevance')
   const activeFile = useState<LocalFile | null>('active-file', () => null)
   const selectedFileIds = useState<number[]>('workspace-selected-file-ids', () => [])
-  const selectedFiles = computed(() => files.value.filter(file => selectedFileIds.value.includes(file.id)))
+  const filesById = computed(() => new Map(files.value.map(file => [file.id, file])))
+  watch(files, () => {
+    if (!selectedFileIds.value.length) return
+    const valid = selectedFileIds.value.filter(id => filesById.value.has(id))
+    if (valid.length !== selectedFileIds.value.length) selectedFileIds.value = valid
+  })
+  const selectedFiles = computed(() => {
+    if (!selectedFileIds.value.length) return []
+    const ids = new Set(selectedFileIds.value)
+    return files.value.filter(file => ids.has(file.id))
+  })
   const showFilePreview = useState('show-file-preview', () => false)
   const maxFilesPerFolder = useState('max-files-per-folder', () => 1000)
   const browserFilesLoaded = useState('browser-files-loaded', () => false)
@@ -95,8 +117,7 @@ export const useFiles = () => {
   const fileTransferRequest = useState<{fileIds:number[];mode:WorkspaceTransferMode;targetFolderPath?:string} | null>('file-transfer-request', () => null)
   const openFileTransfer = (fileIds: number[], mode: WorkspaceTransferMode, targetFolderPath?: string) => {
     if (!isDesktop()) return
-    const existing = new Set(files.value.map(file => file.id))
-    const ids = [...new Set(fileIds)].filter(id => existing.has(id))
+    const ids = [...new Set(fileIds)].filter(id => filesById.value.has(id))
     if (ids.length) fileTransferRequest.value = {fileIds:ids,mode,targetFolderPath}
   }
   const createWorkspaceFolder = async (parentPath: string, name: string) => {
@@ -128,11 +149,9 @@ export const useFiles = () => {
     if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
     return result
   }
-  let searchRequestId = 0
 
-  const formatDate = (timestamp: number) => new Date(timestamp).toLocaleDateString(language.value)
   watch(language, () => {
-    const localize = (file: LocalFile) => file.mtimeValue ? { ...file, mtime: formatDate(file.mtimeValue) } : file
+    const localize = (file: LocalFile) => file.mtimeValue ? { ...file, mtime: dateFormat.value.format(file.mtimeValue) } : file
     files.value = files.value.map(localize)
     if (searchResults.value) searchResults.value = searchResults.value.map(localize)
     if (activeFile.value) activeFile.value = localize(activeFile.value)
@@ -187,13 +206,34 @@ export const useFiles = () => {
     return folders.value.find(folder => folder.path === path)!
   }
 
-  onMounted(() => {
+  if (import.meta.client) {
     const savedLimit = Number(localStorage.getItem('max-files-per-folder'))
     if ([100, 500, 1000, 2500, 5000].includes(savedLimit)) maxFilesPerFolder.value = savedLimit
-  })
+  }
   watch(maxFilesPerFolder, limit => { if (import.meta.client) localStorage.setItem('max-files-per-folder', String(limit)) })
 
-  const loadIndex = async () => {
+  const indexLoading = useState('file-index-loading', () => true)
+  let indexReady = false
+  let indexLoad: Promise<void> | undefined
+  let indexRevision = 0
+  const ensureIndex = () => indexLoad ?? (indexReady ? Promise.resolve() : loadIndex())
+  const loadIndex = (): Promise<void> => {
+    const revision = ++indexRevision
+    if (!indexReady) indexLoading.value = true
+    const task = readIndex(revision).then(() => {
+      if (revision !== indexRevision) return indexLoad
+      indexReady = true
+    }).finally(() => {
+      if (revision === indexRevision) {
+        indexLoading.value = false
+        indexLoad = undefined
+      }
+    })
+    indexLoad = task
+    return task
+  }
+
+  const readIndex = async (revision: number) => {
     if (!isDesktop()) {
       if (browserFilesLoaded.value && browserVisibilityMode.value === settings.value.showSystemFiles) return
       try {
@@ -216,18 +256,38 @@ export const useFiles = () => {
       }
       browserFilesLoaded.value = true
       browserVisibilityMode.value = settings.value.showSystemFiles
-      selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
       if (activeFile.value) activeFile.value = files.value.find(file => file.id === activeFile.value?.id) ?? null
       if (selectedFolder.value && !folders.value.some(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))) selectedFolder.value = null
       return
     }
     await syncSystemFilesPreference()
     const [records, indexedFolders] = await Promise.all([window.electron.invoke('files:list'), window.electron.invoke('files:folders')])
-    files.value = records.map(record => toLocalFile(record, language.value))
+    const next: LocalFile[] = []
+    const formatter = dateFormat.value
+    let frameStart = performance.now()
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]!
+      next.push(toLocalFile(record, formatter))
+      if (i % 128 === 127 && performance.now() - frameStart >= 6) {
+        await new Promise(resolve => setTimeout(resolve, 0))
+        if (revision !== indexRevision) return
+        frameStart = performance.now()
+      }
+    }
+    if (revision !== indexRevision) return
+    files.value = formatter === dateFormat.value ? next : next.map(file => ({
+      ...file, mtime: file.mtimeValue === undefined ? file.mtime : dateFormat.value.format(file.mtimeValue),
+    }))
     folders.value = indexedFolders
-    selectedFileIds.value = selectedFileIds.value.filter(id => files.value.some(file => file.id === id))
     if (selectedFolder.value && !folders.value.some(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))) selectedFolder.value = null
     if (activeFile.value) activeFile.value = files.value.find(file => file.path === activeFile.value?.path) ?? null
+  }
+
+  const addDroppedFolders = async (paths: string[]) => {
+    await syncSystemFilesPreference()
+    const result = await window.electron.invoke('folders:index-drop', { paths, maxFiles: maxFilesPerFolder.value })
+    if (result.added || result.unavailable) await loadIndex()
+    return result
   }
 
   const addFolder = async (options: { extensions?: string[]; signal?: AbortSignal } = {}) => {
@@ -243,33 +303,49 @@ export const useFiles = () => {
       try {
         const directory = await picker()
         if (options.signal?.aborted) return { folderPath: '', indexedCount: 0, skippedCount: 0, limit: maxFilesPerFolder.value, cancelled: true }
-        if (excludedBySettings(directory.name)) throw new Error('Hidden folders cannot be indexed')
+        if (excludedBySettings(directory.name)) return { folderPath: '', indexedCount: 0, skippedCount: 1, limit: maxFilesPerFolder.value }
         const folder = createVirtualFolder(directory.name)
         let indexedCount = 0
         let skippedCount = 0
+        const isUnavailable = (error: unknown) => error instanceof DOMException &&
+          ['NotAllowedError', 'SecurityError', 'NotReadableError', 'NotFoundError'].includes(error.name)
         const visit = async (handle: FileSystemDirectoryHandle, prefix: string) => {
-          for await (const [name, entry] of (handle as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries()) {
-            if (options.signal?.aborted) return
-            if (excludedBySettings(name)) { skippedCount++; continue }
-            if (indexedCount >= maxFilesPerFolder.value) {
-              skippedCount += 1
-              continue
+          try {
+            for await (const [name, entry] of (handle as FileSystemDirectoryHandle & { entries(): AsyncIterableIterator<[string, FileSystemHandle]> }).entries()) {
+              if (options.signal?.aborted) return
+              if (excludedBySettings(name) || indexedCount >= maxFilesPerFolder.value) { skippedCount++; continue }
+              if (entry.kind === 'directory') {
+                await visit(entry as FileSystemDirectoryHandle, prefix + '/' + name)
+                continue
+              }
+              const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() ?? '' : ''
+              if (options.extensions?.length && !options.extensions.includes(extension)) continue
+              let source: File
+              try { source = await (entry as FileSystemFileHandle).getFile() }
+              catch (error) {
+                if (!isUnavailable(error)) throw error
+                skippedCount++
+                continue
+              }
+              if (options.signal?.aborted) return
+              await addBrowserFile(source, prefix, undefined, false)
+              indexedCount++
+              if (indexedCount % 16 === 0) {
+                refreshFolderCounts()
+                saveBrowserState()
+                await new Promise(resolve => setTimeout(resolve, 0))
+              }
             }
-            if (entry.kind === 'directory') {
-              await visit(entry as FileSystemDirectoryHandle, `${prefix}/${name}`)
-              continue
-            }
-            const extension = name.includes('.') ? name.split('.').pop()?.toLowerCase() ?? '' : ''
-            if (options.extensions?.length && !options.extensions.includes(extension)) { skippedCount++; continue }
-            const source = await (entry as FileSystemFileHandle).getFile()
-            if (options.signal?.aborted) return
-            await addBrowserFile(source, prefix)
-            indexedCount += 1
+          } catch (error) {
+            if (!isUnavailable(error)) throw error
+            if (!options.signal?.aborted) skippedCount++
           }
         }
-        await visit(directory, folder.path)
-        refreshFolderCounts()
-        saveBrowserState()
+        try { await visit(directory, folder.path) }
+        finally {
+          refreshFolderCounts()
+          saveBrowserState()
+        }
         return { folderPath: folder.path, indexedCount, skippedCount, limit: maxFilesPerFolder.value, cancelled: options.signal?.aborted ?? false }
       } catch (error: any) {
         if (error?.name === 'AbortError') return null
@@ -283,7 +359,7 @@ export const useFiles = () => {
     return { folderPath: folder.path, indexedCount: 0, skippedCount: 0, limit: maxFilesPerFolder.value }
   }
 
-  const addBrowserFile = async (source: File, folderPath?: string, indexedText?: string) => {
+  const addBrowserFile = async (source: File, folderPath?: string, indexedText?: string, persist = true) => {
     if (excludedBySettings(source.webkitRelativePath || source.name) || (folderPath && excludedBySettings(folderPath))) throw new Error('Hidden files cannot be indexed')
     const known = folderPath ? folders.value.find(folder => folder.path === folderPath || folder.name === folderPath) : undefined
     const targetPath = known?.path ?? folderPath ?? ensureFolder().path
@@ -292,7 +368,7 @@ export const useFiles = () => {
     if (indexedText === undefined && ['pdf', 'docx', 'odt'].includes(extension)) {
       try { content = await extractDocumentText(source); if (!content.trim()) contentError = 'No extractable text (scanned or empty document)' }
       catch (error) { contentError = error instanceof Error ? error.message : String(error) }
-    } else if (indexedText === undefined && (source.type.startsWith('text/') || textExtensions.has(extension))) content = (await source.text()).slice(0, 120000)
+    } else if (indexedText === undefined && (source.type.startsWith('text/') || searchableTextExtensions.has(extension))) content = (await source.text()).slice(0, 120000)
     await storeDocumentBlob(targetPath + '/' + source.name, source)
     const thumbnail = await createImageThumbnail(source)
     const file: LocalFile = {
@@ -301,6 +377,7 @@ export const useFiles = () => {
       path: `${targetPath}/${source.name}`,
       extension,
       size: formatFileSize(source.size),
+      sizeBytes: source.size,
       mtime: formatDate(source.lastModified || Date.now()),
       mtimeValue: source.lastModified || Date.now(),
       tags: [],
@@ -312,8 +389,10 @@ export const useFiles = () => {
       thumbnail,
     }
     files.value = [file, ...files.value.filter(item => item.path !== file.path)]
-    refreshFolderCounts()
-    saveBrowserState()
+    if (persist) {
+      refreshFolderCounts()
+      saveBrowserState()
+    }
     return file
   }
 
@@ -471,7 +550,7 @@ export const useFiles = () => {
     if (typeof content !== 'string' || content.length > 2000000) throw new Error('Invalid document edit')
     if ((current.mtimeValue ?? 0) !== expectedMtime) throw new Error('File changed while the model was responding')
     const type = creatableFileTypes.find(type => type.extension === current.extension)
-    if (!type && !textExtensions.has(current.extension)) throw new Error('This file format cannot be edited')
+    if (!type && !editableTextExtensions.has(current.extension)) throw new Error('This file format cannot be edited')
     const blob = await createDocumentBlob(current.extension, content, type?.mime ?? 'text/plain;charset=utf-8')
     if (!isAllowed()) throw new Error('File editing permission was revoked')
     if (isDesktop()) {
@@ -483,7 +562,7 @@ export const useFiles = () => {
       // Browser imports are project copies. No disk access is requested or implied.
       await storeDocumentBlob(current.path, blob)
       const mtimeValue = Date.now()
-      updateBrowserFile(fileId, file => ({ ...file, content, snippet: content.slice(0, 240), summary: '', contentError: undefined, size: formatFileSize(blob.size), mtimeValue, mtime: formatDate(mtimeValue) }))
+      updateBrowserFile(fileId, file => ({ ...file, content, snippet: content.slice(0, 240), summary: '', contentError: undefined, size: formatFileSize(blob.size), sizeBytes: blob.size, mtimeValue, mtime: formatDate(mtimeValue) }))
     }
     if (searchQuery.value.trim()) await searchIndexedFiles(searchQuery.value)
     return files.value.find(file => file.id === fileId)!
@@ -554,7 +633,7 @@ export const useFiles = () => {
     }
     const stored = await storeDocumentBlob(file.path)
     if (stored) return stored
-    if (file.content !== undefined && (type || textExtensions.has(file.extension))) {
+    if (file.content !== undefined && (type || editableTextExtensions.has(file.extension))) {
       return createDocumentBlob(file.extension, file.content, type?.mime ?? 'text/plain;charset=utf-8')
     }
     throw new Error('Original file is not stored. Import the file again to enable downloads.')
@@ -623,45 +702,133 @@ export const useFiles = () => {
     await window.electron.invoke('files:delete-from-disk', { fileId, mode }); await deleteIndexedFile(fileId)
   }
 
+  let searchWorker: Worker | undefined
+  let workerFiles: LocalFile[] | undefined
+  let workerRequest = 0
+  let workerUnavailable = false
+  const workerReplies = new Map<number, (ids?: number[]) => void>()
+  const disableSearchWorker = () => {
+    workerUnavailable = true
+    searchWorker?.terminate()
+    searchWorker = undefined
+    workerFiles = undefined
+    for (const resolve of workerReplies.values()) resolve()
+    workerReplies.clear()
+  }
+
+  async function searchBrowserFiles(query: string): Promise<LocalFile[]> {
+    while (!workerUnavailable && typeof Worker !== 'undefined') {
+      const snapshot = files.value
+      if (!searchWorker) {
+        try {
+          searchWorker = new Worker(new URL('../workers/fileSearch.worker.ts', import.meta.url), { type: 'module' })
+          searchWorker.onmessage = ({ data }: MessageEvent<BrowserSearchResponse>) => {
+            if (!data.ids) { disableSearchWorker(); return }
+            workerReplies.get(data.id)?.(data.ids)
+            workerReplies.delete(data.id)
+          }
+          searchWorker.onerror = disableSearchWorker
+        } catch { disableSearchWorker(); break }
+      }
+      const id = ++workerRequest
+      const request: BrowserSearchRequest = { id, query }
+      if (workerFiles !== snapshot) {
+        request.files = snapshot.map(({ id, name, content, snippet, note, tags }) =>
+          ({ id, name, content, snippet, note, tags: toRaw(tags) }),
+        )
+        workerFiles = snapshot
+      }
+      const ids = await new Promise<number[] | undefined>(resolve => {
+        workerReplies.set(id, resolve)
+        try { searchWorker!.postMessage(request) }
+        catch { disableSearchWorker() }
+      })
+      if (!ids) break
+      if (snapshot === files.value) return ids.flatMap(id => filesById.value.get(id) ?? [])
+    }
+
+    // Retain browser search if the host prevents Web Workers from starting.
+    const { BrowserSearch } = await import('../../src/services/browserSearch')
+    return new BrowserSearch(files.value).search(query)
+  }
+
+  const resetSearchFiltersAndSelection = () => {
+    selectedType.value = null
+    selectedTag.value = null
+    selectedFileIds.value = []
+    activeFile.value = null
+  }
+
   const searchIndexedFiles = async (query: string) => {
-    const request = ++searchRequestId
-    if (!query.trim()) { searchResults.value = null; return }
-    if (!isDesktop()) {
-      const terms = query.toLocaleLowerCase().split(/\s+/).map(term => term.replace(/^#+/, '')).filter(Boolean)
-      searchResults.value = files.value.filter(file => terms.every(term => [file.name, file.snippet, file.note, file.content ?? '', ...file.tags].join(' ').toLocaleLowerCase().includes(term)))
+    const request = ++searchRequestId.value
+    const submitted = query.trim()
+    if (!submitted) {
+      searchResults.value = null
+      appliedSearchQuery.value = ''
+      searchLoading.value = false
       return
     }
-    const records = await window.electron.invoke('files:search', query)
-    if (request !== searchRequestId) return
-    searchResults.value = records.map(record => toLocalFile(record, language.value))
+    if (isScanningDocuments.value) return
+    searchLoading.value = true
+    try {
+      const results = !isDesktop()
+        ? await searchBrowserFiles(submitted)
+        : (await window.electron.invoke('files:search', submitted)).map(record => toLocalFile(record, dateFormat.value))
+      // Draft changes invalidate replies immediately, even before the next debounce expires.
+      if (isScanningDocuments.value || request !== searchRequestId.value || submitted !== searchQuery.value.trim()) return
+      searchResults.value = results
+      appliedSearchQuery.value = submitted
+    } finally { if (request === searchRequestId.value) searchLoading.value = false }
+  }
+
+  const selectCatalogScope = (folderPath: string | null) => {
+    selectedFolder.value = folderPath
+    searchQuery.value = ''
+    void searchIndexedFiles('')
+    resetSearchFiltersAndSelection()
   }
 
   const searchAllIndexedFiles = async (query: string): Promise<LocalFile[]> => {
     let results: LocalFile[]
     if (!query.trim()) results = files.value
     else if (!isDesktop()) {
-      const terms = query.toLocaleLowerCase().split(/\s+/).map(term => term.replace(/^#+/, '')).filter(Boolean)
-      results = files.value.filter(file => terms.every(term => [file.name, file.snippet, file.note, file.content ?? '', ...file.tags].join(' ').toLocaleLowerCase().includes(term)))
+      results = await searchBrowserFiles(query)
     } else {
       const records = await window.electron.invoke('files:search', query)
-      results = records.map(record => toLocalFile(record, language.value))
+      results = records.map(record => toLocalFile(record, dateFormat.value))
     }
     return results.filter(file => !excludedFromUserLists(file.path))
   }
 
-  const searchOsDocuments = async (query: string): Promise<LocalFile[]> => {
+  const searchOsDocuments = async (query: string, isCurrent: () => boolean = () => true): Promise<LocalFile[]> => {
     if (!isDesktop()) return searchAllIndexedFiles(query)
     const records = query.trim()
       ? await window.electron.invoke('files:search-documents', query)
       : await window.electron.invoke('files:list')
-    const mapped = records.map(record => toLocalFile(record, language.value))
-    const ids = new Set(mapped.map(file => file.id))
-    files.value = [...files.value.filter(file => !ids.has(file.id)), ...mapped]
-    return mapped.filter(file => !excludedFromUserLists(file.path))
+    if (!isCurrent()) return []
+    const matches = records.map(record => toLocalFile(record, dateFormat.value))
+    // A scan can add a match before the latest catalog refresh reaches the renderer.
+    const missing = matches.filter(file => !filesById.value.has(file.id))
+    if (missing.length) files.value = [...files.value, ...missing]
+    return matches.filter(file => !excludedFromUserLists(file.path))
+  }
+
+  const normalizePath = (value: string) => {
+    const normalized = value.replace(/\\/g, '/').replace(/\/$/, '')
+    return isDesktop() && window.electron.platform === 'win32' ? normalized.toLowerCase() : normalized
+  }
+  const selectedRoot = computed(() => normalizePath(folders.value.find(folder =>
+    folder.path === selectedFolder.value || folder.name === selectedFolder.value,
+  )?.path ?? selectedFolder.value ?? ''))
+  const matchesSelectedFolder = (filePath: string) => {
+    const root = selectedRoot.value
+    if (!root) return true
+    const normalized = normalizePath(filePath)
+    return normalized === root || normalized.startsWith(root + '/')
   }
 
   const filteredFiles = computed(() => {
-    const source = searchQuery.value.trim() && searchResults.value !== null ? searchResults.value : files.value
+    const source = appliedSearchQuery.value && searchResults.value !== null ? searchResults.value : files.value
     return source.filter(file => {
       if (excludedFromUserLists(file.path)) return false
       const extension = file.extension.toLowerCase()
@@ -670,12 +837,9 @@ export const useFiles = () => {
           : selectedType.value === '__images__' ? imageFileExtensions.has(extension)
             : extension === selectedType.value.toLowerCase())
       const matchesTag = !selectedTag.value || file.tags.includes(selectedTag.value)
-      const folderPath = folders.value.find(folder => (folder.path === selectedFolder.value || folder.name === selectedFolder.value))?.path
-      const normalize = (value: string) => value.replace(/\\/g, '/').replace(/\/$/, '')
-      const root = normalize(folderPath ?? selectedFolder.value ?? '')
-      const filePath = normalize(file.path)
-      return matchesType && matchesTag && (!root || filePath === root || filePath.startsWith(root + '/'))
+      return matchesType && matchesTag && matchesSelectedFolder(file.path)
     }).sort((a, b) => {
+      if (sortBy.value === 'size-asc' || sortBy.value === 'size-desc') return compareFileSizes(a, b, sortBy.value === 'size-desc')
       if (sortBy.value === 'date') return (b.mtimeValue ?? 0) - (a.mtimeValue ?? 0)
       if (sortBy.value === 'name') return a.name.localeCompare(b.name)
       if (sortBy.value === 'tag') return (a.tags[0] ?? '').localeCompare(b.tags[0] ?? '') || a.name.localeCompare(b.name)
@@ -692,9 +856,21 @@ export const useFiles = () => {
   }
 
   return {
-    fileTransferRequest, openFileTransfer, createWorkspaceFolder, transferWorkspaceFiles, importDroppedFiles, files, folders, searchQuery, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
-    selectFile, getFileTypeCount, loadIndex, addFolder, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
-    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, searchIndexedFiles, searchAllIndexedFiles, searchOsDocuments,
+    fileTransferRequest, openFileTransfer, createWorkspaceFolder, transferWorkspaceFiles, importDroppedFiles, files, folders, searchQuery, appliedSearchQuery, searchLoading, invalidateSearch, selectedType, selectedTag, selectedFolder, sortBy, allTags, maxFilesPerFolder, activeFile, selectedFileIds, selectedFiles, filteredFiles,
+    selectFile, getFileTypeCount, loadIndex, ensureIndex, indexLoading, matchesSelectedFolder, selectCatalogScope, filesById, addFolder, addDroppedFolders, addBrowserFile, addOneFile, createBrowserFile, saveGeneratedMedia, editIndexedFile, createVirtualFolder, removeIndexedFolder,
+    addTagToFile, removeTagFromFile, updateFileNote, getIndexedFileBlob, openIndexedFile, showIndexedFileInFolder, renameIndexedFile, deleteIndexedFile, deleteFileFromDisk, resetSearchFiltersAndSelection, searchIndexedFiles, searchAllIndexedFiles, searchOsDocuments,
     fileDialogFolder, isCreateFileOpen, openCreateFileDialog,
   }
+}
+
+// A single set of file computations and watchers serves the persistent shell and its pages.
+const fileStores = new WeakMap<object, ReturnType<typeof createFiles>>()
+export function useFiles() {
+  const app = useNuxtApp()
+  let store = fileStores.get(app)
+  if (!store) {
+    store = effectScope(true).run(createFiles)!
+    fileStores.set(app, store)
+  }
+  return store
 }

@@ -1,4 +1,5 @@
-import type { WorkspaceTransferRequest, WorkspaceTransferResult } from '../../src/types/workspace';
+import type { ModelRequest } from '../../src/services/modelTransport';
+import type { WorkspaceFolderDropResult, WorkspaceTransferRequest, WorkspaceTransferResult } from '../../src/types/workspace';
 import type { DocumentScanRequest, DocumentScanResult, DocumentScanStatus } from '../../src/types/documentScan';
 import type { ComfyRequest, ComfyResponse } from '../../src/services/comfyTransport'
 interface IndexedFileRecord {
@@ -16,11 +17,15 @@ interface IndexedFileRecord {
 }
 
 interface ElectronBridge {
+  invoke(channel: 'ai:request', request: ModelRequest & { id: string }): Promise<{ status: number; contentType: string; error?: { code: string; message: string; status: number } }>;
+  invoke(channel: 'ai:cancel', id: string): Promise<void>;
+  on(channel: 'ai:chunk', callback: (data: unknown) => void): () => void;
   platform: string
   getPathForFile(file: File): string
   invoke(channel: 'comfy:request', request: ComfyRequest): Promise<ComfyResponse>;
+  invoke(channel: 'folders:index-drop', data: { paths: string[]; maxFiles: number }): Promise<WorkspaceFolderDropResult>;
   invoke(channel: 'files:import-drop', data: { filePath: string; folderPath?: string; maxFiles: number }): Promise<string>
-  invoke(channel: 'files:get-bytes', fileId: number): Promise<number[]>
+  invoke(channel: 'files:get-bytes', fileId: number): Promise<ArrayBuffer>
   invoke(channel: 'app:open-external', href: string): Promise<void>;
   invoke(channel: 'app:open-ai-doc', id: string): Promise<void>;
     invoke(channel: 'app:open-donation'): Promise<void>
@@ -37,6 +42,7 @@ interface ElectronBridge {
   invoke(channel: 'files:get-image-preview', fileId: number): Promise<string | null>
   invoke(channel: 'files:folders'): Promise<Array<{ name: string; path: string; count: number }>>
   invoke(channel: 'files:search', query: string): Promise<IndexedFileRecord[]>
+  invoke(channel: 'files:search-documents', query: string): Promise<IndexedFileRecord[]>
   invoke(channel: 'files:stop-document-scan'): Promise<boolean>;
   invoke(channel: 'files:document-scan-status'): Promise<DocumentScanStatus>;
   invoke(channel: 'files:choose-scan-folders', data: { drivePath: string }): Promise<string[] | null>;
@@ -52,6 +58,11 @@ interface ElectronBridge {
   invoke(channel: 'folders:create', data: {parentPath:string;name:string}): Promise<{name:string;path:string;count:number}>;
   invoke(channel: 'files:transfer-workspace', data: WorkspaceTransferRequest): Promise<WorkspaceTransferResult>;
   invoke(channel: 'folders:remove-from-index', folderPath: string): Promise<void>
+  invoke(channel: 'db:list-indexes'): Promise<{ activeId: string; indexes: Array<{ id: string; name: string }>; scanMode: import('../../src/types/documentScan').ScanMode }>;
+  invoke(channel: 'db:create-index', name: string): Promise<void>;
+  invoke(channel: 'db:switch-index', id: string): Promise<void>;
+  invoke(channel: 'db:delete-index', request: { id: string; language: string }): Promise<void>;
+  invoke(channel: 'db:set-scan-mode', mode: import('../../src/types/documentScan').ScanMode): Promise<void>;
   invoke(channel: 'db:get-status'): Promise<{ connected: boolean; fileCount: number; sizeBytes: number; fts5Available: boolean }>
 }
 

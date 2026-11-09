@@ -9,3 +9,12 @@ export interface WorkspaceTransferResult {
   completed: Array<{ sourceId: number; id: number; oldPath: string; path: string; name: string }>
   failed: Array<{ fileId: number; message: string }>
 }
+
+export interface WorkspaceFolderDropResult {
+  added: number
+  duplicates: number
+  invalid: number
+  unavailable: number
+  indexedCount: number
+  skippedCount: number
+}

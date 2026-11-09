@@ -26,6 +26,7 @@ const {
   dismissPendingFileEdit,
   connectionStatus,
   activeModelConfig,
+  requestProvider,
   isModelEnabled,
   testConnection,
   ask,
@@ -264,19 +265,23 @@ const confirmDeleteFile = async () => {
         </span>
       </div>
 
-      <h2
-          class="truncate text-sm font-bold
-               text-surface-900 dark:text-surface-100"
-      >
-        {{ activeFile.name }}
-      </h2>
+      <div v-auto-animate="{ duration: 150, easing: 'ease-out' }">
+        <div :key="activeFile.id">
+          <h2
+              class="truncate text-sm font-bold
+                   text-surface-900 dark:text-surface-100"
+          >
+            {{ activeFile.name }}
+          </h2>
 
-      <p
-          class="mt-0.5 truncate font-mono
-               text-xs text-surface-400"
-      >
-        {{ activeFile.path }}
-      </p>
+          <p
+              class="mt-0.5 truncate font-mono
+                   text-xs text-surface-400"
+          >
+            {{ activeFile.path }}
+          </p>
+        </div>
+      </div>
 
       <div class="mt-3 flex flex-wrap gap-2">
         <button
@@ -372,13 +377,14 @@ const confirmDeleteFile = async () => {
       </button>
     </div>
 
+      <div class="shrink-0 px-2 pt-2"><AiProviderPicker v-model="requestProvider" :disabled="isThinking" /></div>
       <div class="flex shrink-0 items-center gap-2 border-b border-surface-200 p-2 dark:border-surface-800">
         <label v-if="connectionStatus === 'ok'" class="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-surface-500">
           <span class="shrink-0">{{ t('chatModel') }}</span>
           <AppDropdown v-model="selectedChatModel" :options="availableModels.map(value => ({ value, label: value }))" :placeholder="availableModels.length ? t('selectModel') : t('noModelsFound')" :disabled="availableModels.length === 0" class="min-w-0 flex-1" />
         </label>
         <button v-else type="button" class="w-full rounded-lg border border-surface-200 px-2.5 py-1.5 text-xs text-surface-600 transition hover:bg-surface-50 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800" :disabled="!isModelEnabled || isModelConnecting" @click="connectChatModel">
-          {{ isModelConnecting ? t('sqliteChecking') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection')) }}
+          {{ isModelConnecting ? t('sqliteChecking') : (requestProvider === 'ollama' ? t('connectOllama') : requestProvider === 'lmstudio' ? t('connectLmStudio') : t('testConnection')) }}
         </button>
       </div>
 
@@ -464,7 +470,7 @@ const confirmDeleteFile = async () => {
                 size="12"
             />
 
-            {{ message.provider === 'comfy' ? 'Comfy Desktop' : settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
+            {{ message.provider === 'comfy' ? 'Comfy Desktop' : message.modelProvider === 'ollama' ? 'Ollama' : message.modelProvider === 'lmstudio' ? 'LM Studio (bionic)' : message.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
           <span v-if="message.mediaGeneration" class="rounded border border-current/20 px-1.5 py-0.5" :class="message.mediaGeneration.execution === 'local' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">{{ t(message.mediaGeneration.execution === 'local' ? 'comfyLocalWorkflow' : message.mediaGeneration.execution === 'cloud' ? 'comfyCloudWorkflow' : 'comfyUnknownWorkflow') }}</span>
           </div>
 
@@ -726,55 +732,57 @@ const confirmDeleteFile = async () => {
   </aside>
 
   <Teleport to="body">
-    <div
-      v-if="isDeleteDialogOpen"
-      class="fixed inset-0 z-[100] flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm"
-      @click.self="!isDeleting && (isDeleteDialogOpen = false)"
-    >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="delete-file-title"
-        class="w-full max-w-md rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
+    <AppModalMotion>
+      <div
+        v-if="isDeleteDialogOpen"
+        class="fixed inset-0 z-[100] flex items-center justify-center bg-surface-950/60 p-4 backdrop-blur-sm"
+        @click.self="!isDeleting && (isDeleteDialogOpen = false)"
       >
-        <div class="mb-4 flex items-start gap-3">
-          <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-500">
-            <Icon name="lucide:triangle-alert" size="20" />
+        <section
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-file-title"
+          class="w-full max-w-md rounded-2xl border border-surface-200 bg-white p-5 shadow-2xl dark:border-surface-700 dark:bg-surface-900"
+        >
+          <div class="mb-4 flex items-start gap-3">
+            <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-rose-500/10 text-rose-500">
+              <Icon name="lucide:triangle-alert" size="20" />
+            </div>
+            <div class="min-w-0">
+              <h2 id="delete-file-title" class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ deleteDialogAction === 'disk' ? t('deleteDialogTitle') : t('removeFromIndexTitle') }}</h2>
+              <p class="mt-1 break-words text-sm text-surface-500">{{ activeFile?.name }}</p>
+              <template v-if="deleteDialogAction === 'disk'">
+                <p class="mt-1 text-xs text-surface-500">{{ t('deleteDialogMessage') }}</p>
+                <label class="mt-3 block text-xs font-medium text-surface-700 dark:text-surface-300">{{ t('deleteMode') }}
+                  <AppDropdown v-model="deleteMode" :options="[{ value: 'trash', label: t('moveToTrash') }, { value: 'permanent', label: t('deletePermanently') }]" class="mt-1 w-full" />
+                </label>
+                <p v-if="deleteMode === 'permanent'" class="mt-2 text-xs text-rose-500">{{ t('permanentDeleteWarning') }}</p>
+              </template>
+              <p v-else class="mt-1 text-xs text-surface-500">{{ t('removeFromIndexMessage') }}</p>
+            </div>
           </div>
-          <div class="min-w-0">
-            <h2 id="delete-file-title" class="text-base font-semibold text-surface-900 dark:text-surface-100">{{ deleteDialogAction === 'disk' ? t('deleteDialogTitle') : t('removeFromIndexTitle') }}</h2>
-            <p class="mt-1 break-words text-sm text-surface-500">{{ activeFile?.name }}</p>
-            <template v-if="deleteDialogAction === 'disk'">
-              <p class="mt-1 text-xs text-surface-500">{{ t('deleteDialogMessage') }}</p>
-              <label class="mt-3 block text-xs font-medium text-surface-700 dark:text-surface-300">{{ t('deleteMode') }}
-                <AppDropdown v-model="deleteMode" :options="[{ value: 'trash', label: t('moveToTrash') }, { value: 'permanent', label: t('deletePermanently') }]" class="mt-1 w-full" />
-              </label>
-              <p v-if="deleteMode === 'permanent'" class="mt-2 text-xs text-rose-500">{{ t('permanentDeleteWarning') }}</p>
-            </template>
-            <p v-else class="mt-1 text-xs text-surface-500">{{ t('removeFromIndexMessage') }}</p>
-          </div>
-        </div>
-        <p v-if="fileActionError" class="mt-3 text-xs text-rose-500" role="alert">{{ fileActionError }}</p>
+          <p v-if="fileActionError" class="mt-3 text-xs text-rose-500" role="alert">{{ fileActionError }}</p>
 
-        <div class="mt-5 flex justify-end gap-2">
-          <button
-            type="button"
-            class="rounded-xl border border-surface-200 px-3.5 py-2 text-xs font-medium text-surface-600 transition hover:bg-surface-100 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800"
-            :disabled="isDeleting"
-            @click="isDeleteDialogOpen = false"
-          >{{ t('cancel') }}</button>
-          <button
-            type="button"
-            class="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:opacity-50"
-            :disabled="isDeleting"
-            @click="confirmDeleteFile"
-          >
-            <Icon v-if="isDeleting" name="lucide:loader-2" size="14" class="animate-spin" />
-            {{ deleteDialogAction === 'disk' ? t('confirmDelete') : t('removeFromIndex') }}
-          </button>
-        </div>
-      </section>
-    </div>
+          <div class="mt-5 flex justify-end gap-2">
+            <button
+              type="button"
+              class="rounded-xl border border-surface-200 px-3.5 py-2 text-xs font-medium text-surface-600 transition hover:bg-surface-100 disabled:opacity-50 dark:border-surface-700 dark:text-surface-300 dark:hover:bg-surface-800"
+              :disabled="isDeleting"
+              @click="isDeleteDialogOpen = false"
+            >{{ t('cancel') }}</button>
+            <button
+              type="button"
+              class="inline-flex items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-rose-700 disabled:opacity-50"
+              :disabled="isDeleting"
+              @click="confirmDeleteFile"
+            >
+              <Icon v-if="isDeleting" name="lucide:loader-2" size="14" class="animate-spin" />
+              {{ deleteDialogAction === 'disk' ? t('confirmDelete') : t('removeFromIndex') }}
+            </button>
+          </div>
+        </section>
+      </div>
+    </AppModalMotion>
   </Teleport>
   <DocumentPreviewModal :file="documentPreviewFile" :open-error="fileActionError" @close="documentPreviewFile = null" @open-external="openPreviewExternally" />
 </template>

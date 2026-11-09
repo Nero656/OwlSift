@@ -3,7 +3,9 @@ import { useAiChats } from '~/composables/useAiChats'
 import { useFilePrompts } from '~/composables/useFilePrompts'
 import { creatableFileTypes } from '~/composables/useFileTypes'
 import type { AiFileCreationRequest } from '~/composables/useAi'
-import type { LocalFile } from '~/types/file'
+import type { ChatMessage, LocalFile } from '~/types/file'
+import type { ComponentPublicInstance } from 'vue'
+import type { RequestProvider } from '../../src/services/localProviders'
 import { canEditAiFile } from '~/utils/aiArtifacts'
 
 const { files, folders, selectedFolder, activeFile, createVirtualFolder } = useFiles()
@@ -21,12 +23,10 @@ const fileCreationError = ref('')
 const fileCreationSubmitting = ref(false)
 const imageGenerationPrompt = ref('')
 const imageGenerationAutoStart = ref(false)
-const chatScroll = ref<HTMLElement | null>(null)
 const documentAttachments = ref<{ open: () => void; openComputerPicker: () => void } | null>(null)
 const editFileSelectionPending = ref(false)
 const imageGenerationContext = ref('')
 const imageGenerationNeedsRefinement = ref(false)
-const chatOpening = ref(false)
 const allowFileEdits = ref(false)
 const editPermission = () => {
   const signature = () => (attachedFiles.value).map(file => file.id).sort((a, b) => a - b).join(',')
@@ -34,7 +34,7 @@ const editPermission = () => {
   return () => allowFileEdits.value && signature() === authorizedSelection
 }
 const attachedFiles = computed(() => files.value.filter(file => attachedIds.value.includes(file.id)))
-const { messages, isThinking, generationFeedback, lastError, modelReady, isModelEnabled, activeModelConfig, connectionStatus, availableModels, pendingFileEdits, confirmPendingFileEdit, dismissPendingFileEdit, testConnection, ask, cancel, clear } = useAi(attachedFiles, activeChatId)
+const { messages, isThinking, generationFeedback, lastError, modelReady, isModelEnabled, activeModelConfig, requestProvider, connections, pendingFileEdits, confirmPendingFileEdit, dismissPendingFileEdit, testConnection, ask, cancel, clear } = useAi(attachedFiles, activeChatId)
 const { settings } = useSettings()
 const { t } = useLanguage()
 
@@ -51,17 +51,30 @@ watch(activeChatId, () => {
   lastError.value = ''
   showFilePreview.value = false
 }, { flush: 'sync' })
-const isConnecting = ref(false)
-const selectedModel = computed({
-  get: () => activeModelConfig.value.model,
-  set: value => { activeModelConfig.value.model = value },
+const messageIds = new WeakMap<ChatMessage, string>()
+let nextMessageId = 0
+const messageId = (message: ChatMessage) => {
+  let id = messageIds.get(message)
+  if (!id) { id = `message-${++nextMessageId}`; messageIds.set(message, id) }
+  return id
+}
+const chatMessages = computed(() => {
+  const items = messages.value.map(message => ({
+    id: messageId(message),
+    role: message.sender === 'user' ? 'user' as const : 'assistant' as const,
+    parts: [{ type: 'text' as const, text: message.text }],
+  }))
+  if (isThinking.value && generationFeedback.value?.text) items.push({ id: 'pending-response', role: 'assistant', parts: [] })
+  return items
 })
-const chatModelItems = computed(() => availableModels.value.map(model => ({
-  label: model,
-  type: 'checkbox' as const,
-  checked: selectedModel.value === model,
-  onSelect: () => { selectedModel.value = model },
-})))
+const chatStatus = computed(() => {
+  if (isThinking.value && generationFeedback.value) return generationFeedback.value.text ? 'streaming' : 'submitted'
+  return generatingImage.value ? 'submitted' : 'ready'
+})
+const selectChatModel = (provider: RequestProvider, model: string) => {
+  requestProvider.value = provider
+  activeModelConfig.value.model = model
+}
 
 const samplePrompts = useFilePrompts(attachedFiles)
 
@@ -220,34 +233,12 @@ const focusComposer = (event: MouseEvent) => {
   void nextTick(() => document.querySelector<HTMLTextAreaElement>('[data-chat-composer] textarea, textarea[data-chat-composer]')?.focus())
 }
 
-const scrollChatToBottom = async (behavior: ScrollBehavior = 'smooth') => {
-  await nextTick()
-  const element = chatScroll.value
-  if (element) element.scrollTo({ top: element.scrollHeight, behavior })
-}
-let chatAnimationTimer: ReturnType<typeof setTimeout> | undefined
-watch(activeChatId, async () => {
-  chatOpening.value = true
-  if (chatAnimationTimer) clearTimeout(chatAnimationTimer)
-  await scrollChatToBottom('instant')
-  chatAnimationTimer = setTimeout(() => { chatOpening.value = false }, 240)
-}, { flush: 'post' })
-watch(messages, () => { void scrollChatToBottom() }, { deep: true, flush: 'post' })
-onMounted(() => { void connectModels(); void scrollChatToBottom('instant') })
-
 const attachDocuments = (added: LocalFile[]) => {
   attachedIds.value = [...new Set([...attachedIds.value, ...added.map(file => file.id)])]
 }
 
 const detachDocument = (id: number) => {
   attachedIds.value = attachedIds.value.filter(attachedId => attachedId !== id)
-}
-
-const connectModels = async () => {
-  if (!isModelEnabled.value || !activeModelConfig.value.endpoint.trim() || isConnecting.value) return
-  isConnecting.value = true
-  try { await testConnection() } catch { /* The composable exposes the error. */ }
-  finally { isConnecting.value = false }
 }
 
 </script>
@@ -273,7 +264,8 @@ const connectModels = async () => {
       </div>
     </header>
 
-    <div ref="chatScroll" class="min-h-0 flex-1 space-y-2 overflow-y-auto p-3 sm:p-4" :class="{ 'chat-opening': chatOpening }">
+    <div class="relative min-h-0 flex-1 overflow-y-auto p-3 sm:p-6">
+      <div class="mx-auto flex min-h-full w-full max-w-4xl flex-col gap-6">
       <details class="rounded-xl border border-surface-200 dark:border-surface-800">
         <summary class="cursor-pointer px-3 py-2 text-xs font-medium text-surface-500">{{ t('suggestedActions') }}</summary>
         <div class="space-y-2 p-2 pt-0">
@@ -292,17 +284,30 @@ const connectModels = async () => {
         </div>
       </details>
 
-      <div
-        v-for="(message, index) in messages"
-        :key="index"
-        class="max-w-3xl rounded-2xl p-3 text-sm leading-relaxed"
-        :class="message.sender === 'user'
-          ? 'ml-auto bg-primary-600 text-white'
-          : 'mr-auto border border-surface-200 bg-surface-50 text-surface-800 dark:border-surface-700 dark:bg-surface-800 dark:text-surface-200'"
+      <UChatMessages
+        :key="activeChatId ?? 'general'"
+        :messages="chatMessages"
+        :status="chatStatus"
+        :should-auto-scroll="true"
+        :ui="{ root: 'px-0 gap-5', viewport: 'sticky bottom-4 z-10' }"
       >
+        <template #default="{ registerMessageRef }">
+        <UChatMessage
+          v-for="(message, index) in messages"
+          :id="messageId(message)"
+          :key="messageId(message)"
+          :ref="element => registerMessageRef(messageId(message), element as ComponentPublicInstance | null)"
+          :role="message.sender === 'user' ? 'user' : 'assistant'"
+          :parts="[{ type: 'text', text: message.text }]"
+          :side="message.sender === 'user' ? 'right' : 'left'"
+          :variant="message.sender === 'user' ? 'soft' : 'naked'"
+          :icon="message.sender === 'ai' ? 'i-lucide-sparkles' : undefined"
+          :ui="{ container: 'pb-2', body: 'min-w-0 max-w-full text-sm leading-7', leadingIcon: 'size-5 text-primary-500', ...(message.sender === 'user' ? { body: 'min-w-0 max-w-full rounded-2xl bg-primary-600 px-4 py-3 text-sm leading-7 text-white' } : {}) }"
+        >
+        <template #body>
         <div v-if="message.sender === 'ai'" class="mb-1 flex items-center gap-1.5 text-[10px] font-bold text-primary-500">
           <Icon name="lucide:bot" size="12" />
-          {{ message.provider === 'comfy' ? 'Comfy Desktop' : settings.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
+          {{ message.provider === 'comfy' ? 'Comfy Desktop' : message.modelProvider === 'ollama' ? 'Ollama' : message.modelProvider === 'lmstudio' ? 'LM Studio (bionic)' : message.modelProvider === 'global' ? t('globalModelOption') : t('localModelOption') }}
           <span v-if="message.mediaGeneration" class="rounded border border-current/20 px-1.5 py-0.5" :class="message.mediaGeneration.execution === 'local' ? 'text-green-600 dark:text-green-400' : 'text-amber-600 dark:text-amber-400'">{{ t(message.mediaGeneration.execution === 'local' ? 'comfyLocalWorkflow' : message.mediaGeneration.execution === 'cloud' ? 'comfyCloudWorkflow' : 'comfyUnknownWorkflow') }}</span>
         </div>
         <ChatMessageContent :text="message.text" :pending-file="message.pendingEditId ? pendingFileEdits[message.pendingEditId] : undefined" :references="[...(message.createdFiles ?? []), ...(message.editedFiles ?? []), ...(message.attachments ?? [])]" />
@@ -348,10 +353,19 @@ const connectModels = async () => {
             @click="deleteMessage(index)"
           ><Icon name="lucide:trash-2" size="14" /></button>
         </div>
+        </template>
+        </UChatMessage>
+        </template>
+        <template #viewport="{ onClick }">
+          <UButton icon="i-lucide-arrow-down" color="neutral" variant="outline" class="absolute bottom-0 left-1/2 -translate-x-1/2 rounded-full shadow-sm" :aria-label="t('scrollToLatest')" :title="t('scrollToLatest')" @click="onClick" />
+        </template>
+        <template #indicator>
+          <AiGenerationFeedback v-if="isThinking && generationFeedback" :feedback="generationFeedback" />
+          <div v-else class="flex items-center gap-2 text-sm text-surface-500" role="status"><Icon name="lucide:loader-circle" size="16" class="motion-safe:animate-spin" />{{ t('comfyGenerateTitle') }}</div>
+        </template>
+      </UChatMessages>
+      <p v-if="lastError && !isThinking" role="alert" class="text-xs text-rose-500">{{ lastError }}</p>
       </div>
-
-      <AiGenerationFeedback v-if="isThinking && generationFeedback" :feedback="generationFeedback" />
-      <p v-if="lastError && !isThinking" class="text-xs text-rose-500">{{ lastError }}</p>
     </div>
 
     <div class="w-full shrink-0 space-y-2 border-t border-surface-200 p-3 sm:p-4 dark:border-surface-800">
@@ -365,7 +379,7 @@ const connectModels = async () => {
         :autofocus="false"
         :maxrows="6"
         class="min-w-0 flex-1"
-        :ui="{ root: 'min-w-0 rounded-2xl border border-transparent bg-surface-100 shadow-none ring-0 transition-colors focus-within:border-primary-500 focus-within:ring-0 dark:bg-surface-800', body: 'min-w-0 w-full rounded-none! border-0! bg-transparent! shadow-none! ring-0! outline-none! focus-within:ring-0! focus-visible:ring-0!', base: 'min-h-11 rounded-none! border-0! bg-transparent! px-4 py-2 text-sm shadow-none! outline-none! ring-0! focus:outline-none! focus:ring-0! focus-visible:outline-none! focus-visible:ring-0!', footer: 'flex items-center justify-between gap-2 px-2 pb-2' }"
+        :ui="{ root: 'min-w-0 rounded-2xl border border-transparent bg-surface-100 shadow-none ring-0 transition-colors focus-within:border-primary-500 focus-within:ring-0 dark:bg-surface-800', body: 'min-w-0 w-full rounded-none! border-0! bg-transparent! shadow-none! ring-0! outline-none! focus-within:ring-0! focus-visible:ring-0!', base: 'min-h-11 rounded-none! border-0! bg-transparent! px-4 py-2 text-sm shadow-none! outline-none! ring-0! focus:outline-none! focus:ring-0! focus-visible:outline-none! focus-visible:ring-0!', footer: 'flex flex-wrap items-center justify-between gap-2 px-2 pb-2' }"
         @click="focusComposer"
         @submit="submit()"
       >
@@ -399,42 +413,14 @@ const connectModels = async () => {
           </span>
         </div>
         <div class="ml-auto flex min-w-0 items-center gap-1.5">
-          <UDropdownMenu
-            v-if="availableModels.length"
-            :items="chatModelItems"
-            :content="{ align: 'end', side: 'top', sideOffset: 8, collisionPadding: 12 }"
-            :modal="false"
-            :ui="{ content: 'z-[150] min-w-52 max-w-[min(24rem,calc(100vw-2rem))] max-h-[min(20rem,var(--reka-dropdown-menu-content-available-height))] overflow-y-auto', item: 'cursor-pointer' }"
-          >
-            <UButton
-              type="button"
-              color="neutral"
-              variant="ghost"
-              size="sm"
-              class="max-w-56 min-w-0 gap-1.5 rounded-xl px-2"
-              :disabled="isThinking || generatingImage"
-              :title="selectedModel || t('selectModel')"
-              :aria-label="t('chatModel')"
-            >
-              <Icon name="lucide:bot" size="15" class="shrink-0 text-primary-500" />
-              <span class="min-w-0 truncate text-xs">{{ selectedModel || t('selectModel') }}</span>
-              <Icon name="lucide:chevron-down" size="13" class="shrink-0 text-surface-500" />
-            </UButton>
-          </UDropdownMenu>
-          <UButton
-            v-else
-            type="button"
-            color="neutral"
-            variant="ghost"
-            size="sm"
-            class="max-w-56 min-w-0 rounded-xl px-2 text-xs"
-            :disabled="!isModelEnabled || isConnecting || connectionStatus === 'ok' || !activeModelConfig.endpoint.trim()"
-            :title="isConnecting ? t('sqliteChecking') : connectionStatus === 'ok' ? t('noModelsFound') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection'))"
-            @click="connectModels"
-          >
-            <Icon name="lucide:bot" size="15" class="shrink-0 text-primary-500" />
-            <span class="truncate">{{ isConnecting ? t('sqliteChecking') : connectionStatus === 'ok' ? t('noModelsFound') : (settings.modelProvider === 'local' ? t('connectLmStudio') : t('testConnection')) }}</span>
-          </UButton>
+          <AiModelPicker
+            :provider="requestProvider"
+            :model="activeModelConfig.model"
+            :connections="connections"
+            :connect="testConnection"
+            :disabled="isThinking || generatingImage"
+            @select="selectChatModel"
+          />
           <UButton
             v-if="!isThinking && !generatingImage"
             type="submit"
@@ -509,11 +495,9 @@ const connectModels = async () => {
 </template>
 
 <style scoped>
-.chat-opening { animation: chat-open 220ms ease-out both; }
 .comfy-modal-enter-active, .comfy-modal-leave-active { transition: opacity 180ms ease; }
 .comfy-modal-enter-active .comfy-modal-panel, .comfy-modal-leave-active .comfy-modal-panel { transition: transform 220ms cubic-bezier(.2,.8,.2,1), opacity 180ms ease; }
 .comfy-modal-enter-from, .comfy-modal-leave-to { opacity: 0; }
 .comfy-modal-enter-from .comfy-modal-panel, .comfy-modal-leave-to .comfy-modal-panel { opacity: 0; transform: translateY(12px) scale(.98); }
-@keyframes chat-open { from { opacity: .55; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
-@media (prefers-reduced-motion: reduce) { .chat-opening, .comfy-modal-enter-active, .comfy-modal-leave-active, .comfy-modal-enter-active .comfy-modal-panel, .comfy-modal-leave-active .comfy-modal-panel { animation: none; transition: none; } }
+@media (prefers-reduced-motion: reduce) { .comfy-modal-enter-active, .comfy-modal-leave-active, .comfy-modal-enter-active .comfy-modal-panel, .comfy-modal-leave-active .comfy-modal-panel { animation: none; transition: none; } }
 </style>

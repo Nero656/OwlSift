@@ -8,13 +8,21 @@ const allowedSendChannels = [
 ] as const;
 
 const allowedInvokeChannels = [
+    'ai:request',
+    'ai:cancel',
     'comfy:request',
     'app:open-donation',
     'app:open-ai-doc',
     'app:open-external',
     'files:import-drop',
+    'folders:index-drop',
     'app:get-version',
     'db:get-status',
+    'db:list-indexes',
+    'db:create-index',
+    'db:switch-index',
+    'db:delete-index',
+    'db:set-scan-mode',
     'files:list',
     'files:set-system-visibility',
     'files:add-tag',
@@ -48,6 +56,7 @@ const allowedInvokeChannels = [
 ] as const;
 
 const allowedOnChannels = [
+    'ai:chunk',
     'app:message'
 ] as const;
 

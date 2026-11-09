@@ -8,6 +8,6 @@ export default defineEventHandler(async (event) => {
   }
   const endpoint = base.endsWith('/v1') ? base : `${base}/v1`
   const response = await fetch(`${endpoint}/models`)
-  if (!response.ok) throw createError({ statusCode: response.status, statusMessage: await response.text() || 'LM Studio is unavailable' })
+  if (!response.ok) throw createError({ statusCode: response.status, statusMessage: await response.text() || 'LM Studio (bionic) is unavailable' })
   return await response.json()
 })

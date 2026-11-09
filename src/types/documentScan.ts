@@ -1,8 +1,12 @@
+export type ScanMode = 'auto' | 'ssd' | 'hdd'
+
 export interface DocumentScanRequest {
   drivePath: string
+  additionalDrivePaths?: string[]
   extensions: string[]
   folderPaths?: string[]
   resume?: boolean
+  mode?: ScanMode
 }
 
 export interface DocumentScanResult {
@@ -18,4 +22,8 @@ export interface DocumentScanStatus extends DocumentScanRequest {
   indexedCount: number
   skippedCount: number
   contentCount: number
+  contentTotal: number | null
+  contentProcessed: number
+  scanTotal: number | null
+  scanProcessed: number
 }

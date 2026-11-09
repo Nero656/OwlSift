@@ -78,3 +78,62 @@ label:has(input:is([type="checkbox"], [type="radio"]):disabled) {
 
 input[type="file"]:enabled::file-selector-button { cursor: pointer; }
 input[type="file"]:disabled::file-selector-button { cursor: not-allowed; }
+
+
+/* Native :active feedback appears before click handlers or async actions run. */
+@media (prefers-reduced-motion: no-preference) {
+  :where(button, a, [role="button"]):not(:disabled, [aria-disabled="true"]):active {
+    scale: 0.985;
+  }
+}
+:where(button, a, [role="button"]):not(:disabled, [aria-disabled="true"]):active {
+  filter: brightness(0.88);
+}
+
+
+/* Keep dialog motion on opacity and transforms. */
+@media (prefers-reduced-motion: no-preference) {
+  .owl-modal-enter-active,
+  .owl-modal-leave-active {
+    transition: opacity 160ms ease-out;
+  }
+  .owl-modal-enter-active > [role="dialog"],
+  .owl-modal-leave-active > [role="dialog"] {
+    transition: transform 160ms ease-out;
+  }
+  .owl-modal-enter-from,
+  .owl-modal-leave-to {
+    opacity: 0;
+  }
+  .owl-modal-enter-from > [role="dialog"],
+  .owl-modal-leave-to > [role="dialog"] {
+    transform: translateY(8px) scale(0.985);
+  }
+
+  .owl-native-dialog {
+    opacity: 0;
+    transform: translateY(8px) scale(0.985);
+    transition: opacity 160ms ease-out, transform 160ms ease-out,
+      display 160ms allow-discrete, overlay 160ms allow-discrete;
+  }
+  .owl-native-dialog[open] {
+    opacity: 1;
+    transform: none;
+  }
+  .owl-native-dialog::backdrop {
+    opacity: 0;
+    transition: opacity 160ms ease-out, display 160ms allow-discrete, overlay 160ms allow-discrete;
+  }
+  .owl-native-dialog[open]::backdrop {
+    opacity: 1;
+  }
+  @starting-style {
+    .owl-native-dialog[open] { opacity: 0; transform: translateY(8px) scale(0.985); }
+    .owl-native-dialog[open]::backdrop { opacity: 0; }
+  }
+}
+
+.owl-modal-leave-active,
+.owl-native-dialog:not([open]) {
+  pointer-events: none;
+}

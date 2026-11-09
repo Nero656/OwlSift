@@ -4,7 +4,7 @@ import { isAuxiliaryFilePath, isHiddenPath } from '../../src/utils/fileVisibilit
 import { imageFileExtensions } from '~/utils/fileTypeGroups'
 
 const {
-  files, activeFile, selectFile, loadIndex, addTagToFile, removeTagFromFile, updateFileNote,
+  files, activeFile, selectFile, ensureIndex, indexLoading, addTagToFile, removeTagFromFile, updateFileNote,
 } = useFiles()
 const { settings } = useSettings()
 const { t } = useLanguage()
@@ -121,7 +121,7 @@ const deleteTag = async (tag: string) => {
 }
 
 onMounted(async () => {
-  if (!files.value.length) await loadIndex()
+  await ensureIndex()
   if (!selectedVisibleFile.value && visibleFiles.value.length) selectFile(visibleFiles.value[0]!)
 })
 
@@ -140,7 +140,7 @@ onBeforeUnmount(() => { void persistPendingNote() })
         <div class="space-y-3 border-b border-surface-200 p-3 dark:border-surface-800">
           <label class="relative block">
             <Icon name="lucide:search" size="15" class="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400" />
-            <input v-model="query" :placeholder="t('notesSearch')" class="w-full rounded-xl border border-surface-200 bg-surface-50 py-2.5 pl-9 pr-3 text-xs outline-none focus:border-primary-500 dark:border-surface-700 dark:bg-surface-800">
+            <input data-file-search-input v-model="query" :placeholder="t('notesSearch')" class="w-full rounded-xl border border-surface-200 bg-surface-50 py-2.5 pl-9 pr-3 text-xs outline-none focus:border-primary-500 dark:border-surface-700 dark:bg-surface-800">
           </label>
           <div class="grid grid-cols-2 gap-3">
             <AppDropdown v-model="contentType" :options="contentTypeOptions" class="min-w-0" />
@@ -176,6 +176,7 @@ onBeforeUnmount(() => { void persistPendingNote() })
             <button type="button" class="rounded-md px-2 py-1 hover:bg-surface-100 disabled:opacity-40 dark:hover:bg-surface-800" :disabled="currentPage >= pageCount" @click="currentPage++">{{ t('nextPage') }}</button>
           </div>
         </footer>
+        <IndexSkeleton v-else-if="indexLoading && !files.length" class="p-3" />
         <div v-else class="flex flex-1 items-center justify-center p-6 text-center text-xs text-surface-500">
           {{ allUserFiles.length ? t('notesNoMatch') : t('notesEmpty') }}
         </div>

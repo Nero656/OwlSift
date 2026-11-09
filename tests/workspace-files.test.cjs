@@ -104,3 +104,29 @@ test('externally modified binary files do not inherit stale indexed text',async(
   assert.equal(f.db.getFileContent(result.completed[0].id),'')
  }finally{f.db.close()}
 })
+
+
+test('folder drops index nested files, accept empty folders, and report mixed or duplicate items', async () => {
+ const f = fixture();
+ try {
+  const incoming = path.join(f.root, 'Incoming');
+  const empty = path.join(f.root, 'Empty');
+  const nested = path.join(incoming, 'Nested');
+  fs.mkdirSync(nested, { recursive: true });
+  fs.mkdirSync(empty);
+  const file = path.join(nested, 'Quarterly.pdf');
+  fs.writeFileSync(file, '');
+  const pending = f.db.indexDroppedFolders([incoming, empty, incoming + path.sep, f.a.path, file, 'relative', path.join(f.root, 'missing')]);
+  await assert.rejects(f.db.indexDroppedFolders([incoming]), /SCAN_BUSY/);
+  const result = await pending;
+  assert.equal(result.added, 2);
+  assert.equal(result.duplicates, 2);
+  assert.equal(result.invalid, 2);
+  assert.equal(result.unavailable, 1);
+  assert.equal(result.indexedCount, 1);
+  assert.equal(f.db.listFolders().find(folder => folder.path === empty).count, 0);
+  assert.equal(f.db.listFolders().find(folder => folder.path === incoming).count, 1);
+  assert.equal(f.db.search('ARTER')[0].path, file);
+  assert.equal((await f.db.indexDroppedFolders([empty])).duplicates, 1);
+ } finally { f.db.close(); }
+});

@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import AppHeader from './components/AppHeader.vue'
 import Sidebar from './components/Sidebar.vue'
-import AiPanel from './components/AiPanel.vue'
-import CreateFileDialog from './components/CreateFileDialog.vue'
 
-const { loadIndex, selectedFolder, searchQuery, searchIndexedFiles } = useFiles()
+const { ensureIndex, loadIndex, selectedFolder, searchQuery, searchIndexedFiles, isCreateFileOpen, fileTransferRequest } = useFiles()
+const mountCreateDialog = computed<boolean>(opened => Boolean(opened || isCreateFileOpen.value))
+const mountTransferDialog = computed<boolean>(opened => Boolean(opened || fileTransferRequest.value))
 const { settings } = useSettings()
 const { t } = useLanguage()
 const toast = useToast()
@@ -38,41 +38,44 @@ watch(() => settings.value.showSystemFiles, async () => {
   await loadIndex()
   await searchIndexedFiles(searchQuery.value)
 })
-onMounted(() => { void loadIndex() })
+onMounted(() => { void ensureIndex().catch(error => console.error('Could not load file index:', error)) })
 </script>
 
 <template>
   <UApp :toaster="{ position: 'bottom-right' }">
+  <NuxtLoadingIndicator :throttle="120" />
   <div class="h-screen overflow-hidden bg-surface-50 text-surface-900 dark:bg-surface-950 dark:text-surface-100">
     <div class="flex h-full flex-col">
       <AppHeader />
-      <div class="flex min-h-0 flex-1">
+      <div class="relative flex min-h-0 flex-1">
         <Sidebar />
         <main class="flex min-w-0 flex-1 flex-col overflow-hidden bg-white dark:bg-surface-900">
           <div class="flex min-h-0 flex-1 flex-col">
             <NuxtPage />
           </div>
-          <div v-if="!showFilePreview" class="flex shrink-0 justify-end border-t border-surface-200 p-2 dark:border-surface-800">
-            <button
-              type="button"
-              class="rounded-lg p-2 text-surface-500 transition hover:bg-surface-100 hover:text-surface-700 dark:text-surface-400 dark:hover:bg-surface-800 dark:hover:text-surface-200"
-              :title="t('showPreview')"
-              :aria-label="t('showPreview')"
-              @click="showFilePreview = true"
-            >
-              <Icon name="lucide:panel-right-open" size="18" />
-            </button>
-          </div>
+          <AppFooter :show-file-preview="showFilePreview" @show-preview="showFilePreview = true" />
         </main>
-        <Transition name="file-preview">
+        <Transition
+          name="file-preview"
+          @before-enter="panel => panel.removeAttribute('inert')"
+          @before-leave="panel => panel.setAttribute('inert', '')"
+        >
           <div v-if="showFilePreview" class="file-preview-panel h-full shrink-0 overflow-hidden">
-            <AiPanel />
+            <Suspense>
+              <LazyAiPanel />
+              <template #fallback>
+                <div class="space-y-4 p-4" aria-hidden="true">
+                  <USkeleton class="h-8 w-2/3 motion-reduce:animate-none" />
+                  <USkeleton class="h-32 w-full motion-reduce:animate-none" />
+                </div>
+              </template>
+            </Suspense>
           </div>
         </Transition>
       </div>
     </div>
-    <CreateFileDialog />
-    <FileTransferDialog />
+    <LazyCreateFileDialog v-if="mountCreateDialog" />
+    <LazyFileTransferDialog v-if="mountTransferDialog" />
   </div>
   </UApp>
 </template>
@@ -86,20 +89,26 @@ onMounted(() => { void loadIndex() })
 
 .file-preview-enter-active,
 .file-preview-leave-active {
-  overflow: hidden;
-  transition: width 240ms ease, opacity 180ms ease;
+  transition: transform 180ms ease-out, opacity 160ms ease-out;
+}
+
+.file-preview-leave-active {
+  position: absolute;
+  inset-block: 0;
+  inset-inline-end: 0;
+  z-index: 10;
+  pointer-events: none;
 }
 
 .file-preview-enter-from,
 .file-preview-leave-to {
-  width: 0;
   opacity: 0;
+  transform: translateX(1.25rem);
 }
 
-.file-preview-enter-to,
-.file-preview-leave-from {
-  width: 24rem;
-  opacity: 1;
+.file-preview-enter-from:dir(rtl),
+.file-preview-leave-to:dir(rtl) {
+  transform: translateX(-1.25rem);
 }
 
 @media (prefers-reduced-motion: reduce) {

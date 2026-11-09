@@ -1,19 +1,29 @@
-import type { WorkspaceTransferRequest, WorkspaceTransferResult } from './workspace';
+import type { ModelRequest } from '../services/modelTransport';
+import type { WorkspaceFolderDropResult, WorkspaceTransferRequest, WorkspaceTransferResult } from './workspace';
 import type { DocumentScanRequest, DocumentScanResult, DocumentScanStatus } from './documentScan';
 import type { ComfyRequest, ComfyResponse } from '../services/comfyTransport';
 import type { DatabaseStatus } from '../db/sqlite';
 import type { IndexedFileRecord } from '../db/sqlite';
 
 export interface IElectronAPI {
+  invoke(channel: 'ai:request', request: ModelRequest & { id: string }): Promise<{ status: number; contentType: string; error?: { code: string; message: string; status: number } }>;
+  invoke(channel: 'ai:cancel', id: string): Promise<void>;
+  on(channel: 'ai:chunk', callback: (data: unknown) => void): () => void;
     platform: NodeJS.Platform;
     getPathForFile(file: File): string;
     invoke(channel: 'comfy:request', request: ComfyRequest): Promise<ComfyResponse>;
+  invoke(channel: 'folders:index-drop', data: { paths: string[]; maxFiles: number }): Promise<WorkspaceFolderDropResult>;
   invoke(channel: 'files:import-drop', data: { filePath: string; folderPath?: string; maxFiles: number }): Promise<string>;
     invoke(channel: 'app:open-external', href: string): Promise<void>;
     invoke(channel: 'app:open-ai-doc', id: string): Promise<void>;
     invoke(channel: 'app:open-donation'): Promise<void>;
     send: (channel: 'app:minimize' | 'app:maximize' | 'app:close', data?: unknown) => void;
     invoke(channel: 'app:get-version', data?: unknown): Promise<string>;
+    invoke(channel: 'db:list-indexes'): Promise<{ activeId: string; indexes: Array<{ id: string; name: string }>; scanMode: import('./documentScan').ScanMode }>;
+    invoke(channel: 'db:create-index', name: string): Promise<void>;
+    invoke(channel: 'db:switch-index', id: string): Promise<void>;
+    invoke(channel: 'db:delete-index', request: { id: string; language: string }): Promise<void>;
+    invoke(channel: 'db:set-scan-mode', mode: import('./documentScan').ScanMode): Promise<void>;
     invoke(channel: 'db:get-status', data?: unknown): Promise<DatabaseStatus>;
     invoke(channel: 'files:set-system-visibility', include: boolean): Promise<void>;
     invoke(channel: 'files:list', data?: unknown): Promise<IndexedFileRecord[]>;
@@ -38,7 +48,7 @@ export interface IElectronAPI {
     invoke(channel: 'files:choose-and-index-file', data?: { folderPath?: string; maxFiles?: number }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number } | null>;
     invoke(channel: 'files:edit-content', data: { fileId: number; content: string; bytes: number[]; expectedMtime: number }): Promise<void>;
   invoke(channel: 'files:create-in-folder', data: { folderPath: string; fileName: string; content: string; bytes?: number[] }): Promise<{ folderPath: string; indexedCount: number; skippedCount: number; limit: number }>;
-    invoke(channel: 'files:get-bytes', data: number): Promise<number[]>;
+    invoke(channel: 'files:get-bytes', data: number): Promise<ArrayBuffer>;
     invoke(channel: 'files:get-content', data: number): Promise<string>;
     invoke(channel: 'folders:default-location'): Promise<string>;
   invoke(channel: 'folders:choose-parent'): Promise<string | null>;

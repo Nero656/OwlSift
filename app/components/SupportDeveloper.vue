@@ -22,14 +22,14 @@ const openPayment = async (event: MouseEvent, url: string) => {
 
 <template>
   <div class="px-3 pb-2" :class="compact ? 'flex justify-center' : ''">
-    <button type="button" class="flex items-center justify-center gap-2 rounded-xl bg-primary-500/10 p-2.5 text-xs font-medium text-primary-700 transition hover:bg-primary-500/20 dark:text-primary-400"
+    <button v-auto-animate="{ duration: 180, easing: 'ease-out' }" type="button" class="flex items-center justify-center gap-2 overflow-hidden rounded-xl bg-primary-500/10 p-2.5 text-xs font-medium text-primary-700 transition hover:bg-primary-500/20 dark:text-primary-400"
       :class="compact ? '' : 'w-full'" :title="t('supportDeveloper')" :aria-label="t('supportDeveloper')" @click="openDialog">
-      <Icon name="lucide:heart" size="16" />
-      <span v-if="!compact">{{ t('supportDeveloper') }}</span>
+      <Icon name="lucide:heart" size="16" class="shrink-0" />
+      <span v-if="!compact" class="truncate" aria-hidden="true">{{ t('supportDeveloper') }}</span>
     </button>
     <Teleport to="body">
       <dialog ref="dialog" aria-labelledby="support-title"
-        class="m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100"
+        class="owl-native-dialog m-auto w-[calc(100%-2rem)] max-w-sm rounded-2xl border border-surface-200 bg-white p-5 text-surface-900 shadow-2xl backdrop:bg-black/60 dark:border-surface-700 dark:bg-surface-900 dark:text-surface-100"
         @click="($event.target === dialog) && dialog?.close()">
         <div class="flex items-start justify-between gap-3">
           <h2 id="support-title" class="text-base font-semibold">{{ t('supportDeveloper') }}</h2>

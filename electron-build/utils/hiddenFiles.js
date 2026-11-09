@@ -80,7 +80,12 @@ while (($line = [Console]::ReadLine()) -ne $null) {
     $request = $null
     try {
         $request = $line | ConvertFrom-Json
-        $names = @([System.IO.Directory]::EnumerateFileSystemEntries($request.path) | Where-Object { ([int][System.IO.File]::GetAttributes($_) -band 6) -ne 0 } | ForEach-Object { [System.IO.Path]::GetFileName($_) })
+        $names = @([System.IO.Directory]::EnumerateFileSystemEntries($request.path) | ForEach-Object {
+            $entryPath = $_
+            try {
+                if (([int][System.IO.File]::GetAttributes($entryPath) -band 6) -ne 0) { [System.IO.Path]::GetFileName($entryPath) }
+            } catch { [System.IO.Path]::GetFileName($entryPath) }
+        })
         [Console]::WriteLine((@{id=$request.id; names=$names} | ConvertTo-Json -Compress))
     } catch {
         [Console]::WriteLine((@{id=$request.id; error=$_.Exception.Message} | ConvertTo-Json -Compress))
@@ -113,7 +118,7 @@ while (($line = [Console]::ReadLine()) -ne $null) {
                             clearTimeout(item.timer);
                             pending.delete(response.id);
                             if (response.error)
-                                item.reject(new Error(response.error));
+                                item.reject(Object.assign(new Error(response.error), { code: 'EACCES' }));
                             else
                                 item.resolve(new Set((response.names ?? []).map(name => String(name).toLowerCase())));
                         }
@@ -140,13 +145,13 @@ while (($line = [Console]::ReadLine()) -ne $null) {
             return false;
         if (disposed)
             throw new Error('Visibility worker stopped');
-        let current = node_path_1.default.resolve(filePath);
-        while (node_path_1.default.dirname(current) !== current) {
+        const ancestors = [];
+        for (let current = node_path_1.default.resolve(filePath); node_path_1.default.dirname(current) !== current; current = node_path_1.default.dirname(current))
+            ancestors.push(current);
+        for (const current of ancestors.reverse()) {
             signal.throwIfAborted();
-            const parent = node_path_1.default.dirname(current);
-            if ((await hiddenEntries(parent)).has(node_path_1.default.basename(current).toLowerCase()))
+            if ((await hiddenEntries(node_path_1.default.dirname(current))).has(node_path_1.default.basename(current).toLowerCase()))
                 return true;
-            current = parent;
         }
         return false;
     };

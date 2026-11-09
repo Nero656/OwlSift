@@ -1,4 +1,10 @@
-import type { WorkspaceTransferRequest, WorkspaceTransferResult } from '../types/workspace';
+import { searchableFileExtensions } from '../utils/fileTypeGroups';
+import { canIndexText, createScanTextReader, isRichDocument, readIndexedText } from '../services/indexedText';
+import { randomUUID } from 'node:crypto';
+import { createStorageStrategy, normalizeScanMode, yieldScan } from '../services/scanStorage';
+import type { ScanMode } from '../types/documentScan';
+import { FileSearch } from '../services/fuzzySearch';
+import type { WorkspaceFolderDropResult, WorkspaceTransferRequest, WorkspaceTransferResult } from '../types/workspace';
 import { placeWorkspaceFile, sameFileVersion } from '../services/workspaceFiles';
 import type { DocumentScanResult, DocumentScanStatus } from '../types/documentScan';
 import { createAsyncFileVisibilityFilter, createFileVisibilityFilter } from '../utils/hiddenFiles';
@@ -16,6 +22,7 @@ export interface IndexedFile {
     size: number;
     mtime: number;
     content: string;
+    textIndexed?: boolean;
 }
 
 export interface SearchResult {
@@ -23,6 +30,7 @@ export interface SearchResult {
     path: string;
     name: string;
     snippet: string;
+    contentMatch?: string;
 }
 
 export interface IndexedFileRecord extends SearchResult {
@@ -41,21 +49,114 @@ export interface DatabaseStatus {
 }
 
 export const MAX_FILES_PER_FOLDER = 1000;
-const OS_DOCUMENT_EXTENSIONS = new Set([
-    'pdf', 'doc', 'docx', 'odt', 'rtf', 'txt', 'md', 'markdown', 'log',
-    'csv', 'tsv', 'xls', 'xlsx', 'ods', 'ppt', 'pptx', 'odp', 'html', 'htm',
-    'json', 'xml', 'yaml', 'yml',
-]);
+const EARLY_CONTENT_THRESHOLD = 5000;
+const EARLY_CONTENT_INTERVAL = 100;
 const OS_SCAN_IGNORED_DIRECTORIES = new Set([
     'windows', '$recycle.bin', 'system volume information', 'program files',
     'program files (x86)', 'programdata', 'perflogs', 'recovery',
     'proc', 'sys', 'dev', 'run', 'snap', 'node_modules', '.git',
 ]);
+const isAccessDenied = (error: unknown): boolean => {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    return code === 'EACCES' || code === 'EPERM';
+};
+
+async function verifyScanReadable(filePath: string): Promise<void> {
+    if (process.platform === 'win32') {
+        // access() does not test Windows ACLs.
+        const handle = await fs.promises.open(filePath, 'r');
+        await handle.close();
+    } else {
+        await fs.promises.access(filePath, fs.constants.R_OK);
+    }
+}
+
 const OS_SCAN_IGNORED_UNIX_ROOTS = new Set(['usr', 'etc', 'var', 'lib', 'lib64', 'bin', 'sbin', 'boot', 'system', 'applications', 'private']);
 
+interface IndexCatalog {
+    activeId: string;
+    scanMode?: ScanMode;
+    indexes: Array<{ id: string; name: string }>;
+}
+
 class DatabaseManager {
+    private catalog!: IndexCatalog;
+    private folderScanRunning = false;
+
+    private indexPath(id: string): string {
+        return path.join(app.getPath('userData'), id === 'default' ? 'localmind.db' : 'index-' + id + '.db');
+    }
+
+    private get catalogPath(): string {
+        return path.join(app.getPath('userData'), 'index-catalog.json');
+    }
+
+    private saveCatalog(catalog: IndexCatalog): void {
+        const temporaryPath = this.catalogPath + '.tmp';
+        fs.writeFileSync(temporaryPath, JSON.stringify(catalog));
+        fs.renameSync(temporaryPath, this.catalogPath);
+        this.catalog = catalog;
+    }
+
+    public listIndexes() {
+        if (!this.catalog) throw new Error('Index databases could not be opened.');
+        return { ...this.catalog, scanMode: normalizeScanMode(this.catalog.scanMode) };
+    }
+
+    public setScanMode(mode: unknown): void {
+        this.saveCatalog({ ...this.catalog, scanMode: normalizeScanMode(mode) });
+    }
+
+    public createIndex(name: string): void {
+        if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) throw new Error('Enter an index name (1–80 characters).');
+        const trimmed = name.trim();
+        if (this.catalog.indexes.some(index => index.name.toLowerCase() === trimmed.toLowerCase())) throw new Error('An index with this name already exists.');
+        const index = { id: randomUUID(), name: trimmed };
+        new Database(this.indexPath(index.id)).close();
+        try {
+            this.saveCatalog({ ...this.catalog, indexes: [...this.catalog.indexes, index] });
+        } catch (error) {
+            fs.unlinkSync(this.indexPath(index.id));
+            throw error;
+        }
+    }
+
+    public switchIndex(id: string): void {
+        if (id === this.catalog.activeId) return;
+        if (!this.catalog.indexes.some(index => index.id === id)) throw new Error('Index not found.');
+        if (this.documentScan || this.folderScanRunning || this.workspaceTransferBusy) throw new Error('Wait for indexing or file operations to finish.');
+        const previous = { db: this.db, dbPath: this.dbPath, searchIndex: this.searchIndex, fileUpsert: this.fileUpsert };
+        this.db = null;
+        this.fileUpsert = null;
+        try {
+            this.openIndex(this.indexPath(id), true);
+            this.saveCatalog({ ...this.catalog, activeId: id });
+        } catch (error) {
+            this.close();
+            Object.assign(this, previous);
+            throw error;
+        }
+        previous.db?.close();
+    }
+
+    public deleteIndex(id: string): void {
+        if (id === this.catalog.activeId) throw new Error('Switch to another index before deleting this one.');
+        if (!this.catalog.indexes.some(index => index.id === id)) throw new Error('Index not found.');
+        const filename = this.indexPath(id);
+        // Rename first so a catalog write failure can restore the index.
+        fs.renameSync(filename, filename + '.deleted');
+        try {
+            this.saveCatalog({ ...this.catalog, indexes: this.catalog.indexes.filter(index => index.id !== id) });
+        } catch (error) {
+            fs.renameSync(filename + '.deleted', filename);
+            throw error;
+        }
+        for (const suffix of ['.deleted', '-wal', '-shm', '-journal']) fs.rmSync(filename + suffix, { force: true });
+    }
+
     private db: Database.Database | null = null;
     private dbPath: string | null = null;
+    private searchIndex: FileSearch | null = null;
     private includeSystemFiles = false;
     private visibility = createFileVisibilityFilter();
 
@@ -80,7 +181,21 @@ class DatabaseManager {
      */
     public init(): void {
         // Храним базу в папке пользовательских данных приложения (UserData)
-        const dbPath = path.join(app.getPath('userData'), 'localmind.db');
+        const existing = fs.existsSync(this.catalogPath);
+        if (existing) {
+            const catalog = JSON.parse(fs.readFileSync(this.catalogPath, 'utf8')) as IndexCatalog;
+            if (!Array.isArray(catalog.indexes) || !catalog.indexes.every(index =>
+                typeof index.name === 'string' && (index.id === 'default' || /^[a-f0-9-]{36}$/.test(index.id))) ||
+                !catalog.indexes.some(index => index.id === catalog.activeId)) throw new Error('Invalid index catalog.');
+            this.catalog = catalog;
+            for (const index of catalog.indexes) {
+                const filename = this.indexPath(index.id);
+                if (!fs.existsSync(filename) && fs.existsSync(filename + '.deleted')) fs.renameSync(filename + '.deleted', filename);
+            }
+            this.openIndex(this.indexPath(catalog.activeId), true);
+            return;
+        }
+        const dbPath = this.indexPath('default');
 
         // Seed a first-run database from the project asset, then keep the writable copy in userData.
         const seedPath = app.isPackaged
@@ -90,7 +205,12 @@ class DatabaseManager {
             fs.copyFileSync(seedPath, dbPath);
         }
 
-        this.db = new Database(dbPath);
+        this.openIndex(dbPath);
+        this.saveCatalog({ activeId: 'default', indexes: [{ id: 'default', name: 'Default' }] });
+    }
+
+    private openIndex(dbPath: string, fileMustExist = false): void {
+        this.db = new Database(dbPath, { fileMustExist });
         this.db.function('owlsift_file_visible', (filePath: string) => this.isFileVisibleForQuery(filePath) ? 1 : 0);
         this.dbPath = dbPath;
         this.db.pragma('foreign_keys = ON');
@@ -100,87 +220,206 @@ class DatabaseManager {
         this.db.pragma('journal_mode = WAL');
 
         this.createTables();
+        this.searchIndex = new FileSearch(this.db);
+        this.searchIndex.initialize();
         this.db.exec(`
             CREATE TABLE IF NOT EXISTS document_scan_job (
                 id INTEGER PRIMARY KEY CHECK (id = 1), config TEXT NOT NULL,
-                phase TEXT NOT NULL, indexed_count INTEGER NOT NULL DEFAULT 0,
+                phase TEXT NOT NULL, content_total INTEGER, content_processed INTEGER, files_checked INTEGER, indexed_count INTEGER NOT NULL DEFAULT 0,
                 skipped_count INTEGER NOT NULL DEFAULT 0, content_count INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS document_scan_queue (
                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL, path TEXT NOT NULL,
-                size INTEGER, mtime INTEGER, UNIQUE(kind, path)
+                size INTEGER, mtime INTEGER, indexed_in_job INTEGER NOT NULL DEFAULT 0, UNIQUE(kind, path)
             );
             CREATE TABLE IF NOT EXISTS document_scan_pending_content (
                 path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS document_scan_skips (path TEXT PRIMARY KEY);
             CREATE INDEX IF NOT EXISTS document_scan_queue_kind ON document_scan_queue(kind, id);
         `);
+        const queueColumns = this.db.pragma('table_info(document_scan_queue)') as Array<{ name: string }>;
+        if (!queueColumns.some(column => column.name === 'indexed_in_job')) {
+            this.db.exec('ALTER TABLE document_scan_queue ADD COLUMN indexed_in_job INTEGER NOT NULL DEFAULT 0');
+        }
+        if (!queueColumns.some(column => column.name === 'lane')) {
+            this.db.exec('ALTER TABLE document_scan_queue ADD COLUMN lane INTEGER NOT NULL DEFAULT 0');
+        }
+        this.db.exec('CREATE INDEX IF NOT EXISTS document_scan_queue_lane ON document_scan_queue(kind, lane, id)');
+        const columns = this.db.pragma('table_info(document_scan_job)') as Array<{ name: string }>;
+        for (const column of ['content_total', 'content_processed', 'files_checked']) {
+            if (!columns.some(existing => existing.name === column)) {
+                this.db.exec('ALTER TABLE document_scan_job ADD COLUMN ' + column + ' INTEGER');
+            }
+        }
     }
 
     /** Index a folder recursively. Text files are stored for FTS; other files remain searchable by name. */
-    public indexFolder(folderPath: string, requestedLimit = MAX_FILES_PER_FOLDER): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
+    public async indexFolder(folderPath: string, requestedLimit = MAX_FILES_PER_FOLDER) {
+        if (this.folderScanRunning || this.documentScan) throw new Error('[SCAN_BUSY] Indexing is already running');
+        this.folderScanRunning = true;
+        try { return await this.indexFolderContents(folderPath, requestedLimit); }
+        finally { this.folderScanRunning = false; }
+    }
+
+    public async indexDroppedFolders(paths: string[], maxFiles?: number): Promise<WorkspaceFolderDropResult> {
+        if (this.folderScanRunning || this.documentScan) throw new Error('[SCAN_BUSY] Indexing is already running');
         if (!this.db) throw new Error('SQLite is not initialized');
-        const limit = Math.max(1, Math.min(5000, Math.floor(requestedLimit) || MAX_FILES_PER_FOLDER));
-
-        const textExtensions = new Set([
-            '.tsv', '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
-            '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
-        ]);
-        const visibility = createFileVisibilityFilter();
-        if (!this.includeSystemFiles && visibility.isHidden(folderPath)) throw new Error('Hidden folders cannot be indexed');
-        let indexedCount = 0;
-        let skippedCount = 0;
-
-        const visit = (directory: string): void => {
-            let entries: fs.Dirent[];
-            try { entries = fs.readdirSync(directory, { withFileTypes: true }); } catch { return; }
-            entries = entries
-                .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
-            for (const entry of entries) {
-                const entryPath = path.join(directory, entry.name);
-                if (entry.isSymbolicLink()) continue;
-                try {
-                    if (!this.includeSystemFiles && visibility.isHidden(entryPath)) { skippedCount++; continue; }
-                } catch { skippedCount++; continue; }
-                if (entry.isDirectory()) {
-                    visit(entryPath);
+        const result = { added: 0, duplicates: 0, invalid: 0, unavailable: 0, indexedCount: 0, skippedCount: 0 };
+        const keyFor = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value);
+        const registered = this.db.prepare('SELECT path FROM indexed_folders').all() as Array<{ path: string }>;
+        const known = new Set(registered.map(folder => keyFor(folder.path)));
+        const exists = this.db.prepare('SELECT 1 FROM indexed_folders WHERE path = ?');
+        this.folderScanRunning = true;
+        try {
+            for (const source of paths) {
+                if (typeof source !== 'string' || !path.isAbsolute(source)) {
+                    result.invalid++;
                     continue;
                 }
-                if (!entry.isFile()) continue;
-                if (indexedCount >= limit) {
-                    skippedCount += 1;
-                    continue;
-                }
-
+                const folder = path.resolve(source);
+                const key = keyFor(folder);
                 try {
-                    const stat = fs.statSync(entryPath);
-                    const extension = path.extname(entry.name).toLowerCase().replace(/^\./, '');
-                    let content = '';
-                    if (textExtensions.has(`.${extension}`) && stat.size <= 2 * 1024 * 1024) {
-                        content = fs.readFileSync(entryPath, 'utf8');
+                    if (!(await fs.promises.lstat(folder)).isDirectory()) {
+                        result.invalid++;
+                        continue;
                     }
-                    this.saveFile({
-                        path: entryPath,
-                        name: entry.name,
-                        extension,
-                        size: stat.size,
-                        mtime: Math.floor(stat.mtimeMs),
-                        content,
-                    });
-                    indexedCount += 1;
+                    if (known.has(key)) {
+                        result.duplicates++;
+                        continue;
+                    }
+                    const indexed = await this.indexFolderContents(folder, maxFiles ?? MAX_FILES_PER_FOLDER);
+                    if (!exists.get(folder)) {
+                        result.unavailable++;
+                        continue;
+                    }
+                    known.add(key);
+                    result.added++;
+                    result.indexedCount += indexed.indexedCount;
+                    result.skippedCount += indexed.skippedCount;
                 } catch (error) {
-                    console.warn(`Skipping unreadable file ${entryPath}:`, error);
+                    console.error('Could not index dropped folder:', error);
+                    result.unavailable++;
                 }
             }
+            return result;
+        } finally {
+            this.folderScanRunning = false;
+        }
+    }
+
+    private async indexFolderContents(folderPath: string, requestedLimit: number) {
+        if (!this.db) throw new Error('SQLite is not initialized');
+        const limit = Math.max(1, Math.min(5000, Math.floor(requestedLimit) || MAX_FILES_PER_FOLDER));
+        const includeSystemFiles = this.includeSystemFiles;
+        const signal = new AbortController().signal;
+        const visibility = createAsyncFileVisibilityFilter(signal);
+        const textReader = createScanTextReader(signal);
+        const { widthFor } = createStorageStrategy(normalizeScanMode(this.catalog.scanMode));
+        const previous = this.db.prepare(`
+            SELECT size, mtime, CASE WHEN text_indexed=1 THEN 1 ELSE content<>'' END AS text_ready FROM files WHERE path = ? AND is_deleted = 0
+            AND NOT EXISTS (SELECT 1 FROM document_scan_pending_content WHERE path = files.path)
+        `);
+        let indexedCount = 0;
+        let skippedCount = 0;
+        const writes: IndexedFile[] = [];
+        let bytes = 0;
+        const flush = async () => {
+            this.saveFiles(writes);
+            writes.length = 0;
+            bytes = 0;
+            await yieldScan();
         };
 
-        visit(folderPath);
-        const activePaths = (this.db.prepare('SELECT id, path FROM files WHERE is_deleted = 0').all() as Array<{ id: number; path: string }>)
-            .filter(({ path: filePath }) => {
-                const relative = path.relative(folderPath, filePath);
-                return this.isFileVisible(filePath) && relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-            })
-            .sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
+        const visit = async (directory: string): Promise<boolean> => {
+            let entries: fs.Dirent[];
+            let width: number;
+            try {
+                const stat = await fs.promises.lstat(directory);
+                if (!stat.isDirectory() || stat.isSymbolicLink() || (!includeSystemFiles && await visibility.isHidden(directory))) {
+                    skippedCount++;
+                    return false;
+                }
+                width = await widthFor(directory, stat.dev);
+                entries = await fs.promises.readdir(directory, { withFileTypes: true });
+            } catch (cause) {
+                if (visibility.failure) throw new Error('[SCAN_ACCESS] File protection check failed', { cause: visibility.failure });
+                skippedCount++;
+                return false;
+            }
+            entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+            for (let i = 0; i < entries.length;) {
+                const entry = entries[i]!;
+                if (entry.isDirectory()) {
+                    const entryPath = path.join(directory, entry.name);
+                    i++;
+                    await visit(entryPath);
+                    continue;
+                }
+                const batch: fs.Dirent[] = [];
+                const batchSize = Math.min(width, Math.max(1, limit - indexedCount));
+                do {
+                    const candidate = entries[i++]!;
+                    if (!candidate.isFile()) continue;
+                    if (indexedCount + batch.length < limit) batch.push(candidate);
+                    else skippedCount++;
+                } while (i < entries.length && !entries[i]!.isDirectory() && batch.length < batchSize);
+                const results = await Promise.all(batch.map(async candidate => {
+                    const filePath = path.join(directory, candidate.name);
+                    try {
+                        if (!includeSystemFiles && await visibility.isHidden(filePath)) return null;
+                        const stat = await fs.promises.lstat(filePath);
+                        if (!stat.isFile() || stat.isSymbolicLink()) return null;
+                        await verifyScanReadable(filePath);
+                        const mtime = Math.floor(stat.mtimeMs);
+                        const extension = path.extname(candidate.name).slice(1).toLowerCase();
+                        let textIndexed = canIndexText(extension, stat.size);
+                        const existing = previous.get(filePath) as { size: number; mtime: number; text_ready: number } | undefined;
+                        if (existing?.size === stat.size && existing.mtime === mtime && (!textIndexed || existing.text_ready)) return { unchanged: true } as const;
+                        let content = '';
+                        if (textIndexed) {
+                            try { content = await textReader.read(filePath, extension); }
+                            catch (cause) {
+                                if (!isRichDocument(extension) || isAccessDenied(cause)) throw cause;
+                                textIndexed = false;
+                            }
+                            const after = await fs.promises.lstat(filePath);
+                            if (!after.isFile() || after.ino !== stat.ino || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs) return null;
+                        }
+                        return { path: filePath, name: candidate.name, extension, size: stat.size, mtime, content, textIndexed };
+                    } catch {
+                        if (visibility.failure) throw new Error('[SCAN_ACCESS] File protection check failed', { cause: visibility.failure });
+                        return null;
+                    }
+                }));
+                for (const result of results) {
+                    if (!result) { skippedCount++; continue; }
+                    indexedCount++;
+                    if ('unchanged' in result) continue;
+                    writes.push(result);
+                    bytes += result.content.length;
+                }
+                if (writes.length >= 100 || bytes >= 4 * 1024 * 1024) await flush();
+            }
+            return true;
+        };
+
+        const activePaths: Array<{ id: number; path: string }> = [];
+        try {
+            if (!await visit(folderPath)) return { folderPath, indexedCount, skippedCount, limit };
+            if (writes.length) await flush();
+            const records = this.db.prepare('SELECT id, path FROM files WHERE is_deleted = 0').all() as typeof activePaths;
+            for (const record of records) {
+                const relative = path.relative(folderPath, record.path);
+                if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) continue;
+                try {
+                    if (includeSystemFiles || !await visibility.isHidden(record.path)) activePaths.push(record);
+                } catch (cause) {
+                    if (visibility.failure || !isAccessDenied(cause)) throw cause;
+                }
+            }
+        } finally { visibility.dispose(); textReader.dispose(); }
+        activePaths.sort((a, b) => a.path.localeCompare(b.path, undefined, { sensitivity: 'base' }));
         const capExcess = activePaths.slice(limit);
         if (capExcess.length) {
             const hideFile = this.db.prepare('UPDATE files SET is_deleted = 1 WHERE id = ?');
@@ -226,21 +465,34 @@ class DatabaseManager {
     }
 
     /** Resolve and deduplicate selected subtrees without allowing a different disk. */
-    public async documentScanRoots(drivePath: string, folderPaths?: string[]): Promise<string[]> {
-        const selectedDrive = this.listScanDrives().find(drive => {
+    public async documentScanRoots(drivePath: string, folderPaths?: string[], drives = this.listScanDrives()): Promise<string[]> {
+        const selectedDrive = drives.find(drive => {
             const current = path.resolve(drive.path), requested = path.resolve(String(drivePath || ''));
             return process.platform === 'win32' ? current.toLowerCase() === requested.toLowerCase() : current === requested;
         });
-        if (!selectedDrive) throw new Error('Choose an available drive before scanning');
-        if (folderPaths !== undefined && (!Array.isArray(folderPaths) || !folderPaths.length)) throw new Error('Select at least one folder before scanning');
-        const root = await fs.promises.realpath(selectedDrive.path);
+        if (!selectedDrive) throw new Error('[SCAN_DRIVE] Choose an available drive before scanning');
+        if (folderPaths !== undefined && (!Array.isArray(folderPaths) || !folderPaths.length)) throw new Error('[SCAN_SCOPE] Select at least one folder before scanning');
+        const root = await fs.promises.realpath(selectedDrive.path).catch(() => {
+            throw new Error('[SCAN_DRIVE] Choose an available drive before scanning');
+        });
         const roots: string[] = [];
         for (const folder of folderPaths ?? [root]) {
-            if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw new Error('Invalid scan folder');
-            const resolved = await fs.promises.realpath(folder);
+            if (typeof folder !== 'string' || !path.isAbsolute(folder)) throw new Error('[SCAN_SCOPE] Invalid scan folder');
+            let resolved: string;
+            try {
+                resolved = await fs.promises.realpath(folder);
+                if (!(await fs.promises.stat(resolved)).isDirectory()) throw new Error('[SCAN_SCOPE] Scan target must be a folder');
+            } catch (error) {
+                if (!isAccessDenied(error)) {
+                    const code = (error as NodeJS.ErrnoException)?.code;
+                    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error('[SCAN_SCOPE] Scan folder unavailable', { cause: error });
+                    throw error;
+                }
+                // The scanner will record the inaccessible target without traversing it.
+                resolved = path.resolve(folder);
+            }
             const relative = path.relative(root, resolved);
-            if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('Choose folders on the selected drive');
-            if (!(await fs.promises.stat(resolved)).isDirectory()) throw new Error('Scan target must be a folder');
+            if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new Error('[SCAN_SCOPE] Choose folders on the selected drive');
             if (!roots.some(existing => path.relative(existing, resolved) === '')) roots.push(resolved);
         }
         return roots.filter(folder => !roots.some(parent => {
@@ -252,180 +504,346 @@ class DatabaseManager {
 
     public documentScanStatus(): DocumentScanStatus {
         const row = this.db?.prepare('SELECT * FROM document_scan_job WHERE id = 1').get() as {
-            config: string; phase: 'metadata' | 'content'; indexed_count: number; skipped_count: number; content_count: number;
+            config: string; phase: 'metadata' | 'content'; indexed_count: number; skipped_count: number; content_count: number; content_total: number | null; content_processed: number | null; files_checked: number | null;
         } | undefined;
         const config = row ? JSON.parse(row.config) : { drivePath: '', extensions: [] };
+        const scanTotal = row?.phase === 'content' && row.files_checked !== null
+            ? Math.max(row.files_checked, row.content_total ?? 0)
+            : null;
+        const remaining = Math.max(0, (row?.content_total ?? 0) - (row?.content_processed ?? 0));
         return {
             ...config, running: Boolean(this.documentScan), resumable: Boolean(row), phase: row?.phase ?? null,
             indexedCount: row?.indexed_count ?? 0, skippedCount: row?.skipped_count ?? 0, contentCount: row?.content_count ?? 0,
+            contentTotal: row?.content_total ?? null, contentProcessed: row?.content_processed ?? 0,
+            scanTotal, scanProcessed: scanTotal === null ? 0 : scanTotal - remaining,
         };
     }
 
-    /** Metadata first, sequential content reads second; queue and batches commit together. */
-    public async scanOsDocuments(drivePath: string, requestedExtensions: string[], folderPaths?: string[], resume = false): Promise<DocumentScanResult> {
+    /** Discover files and drain content in bounded batches, committing each batch with its checkpoint. */
+    public async scanOsDocuments(drivePath: string, requestedExtensions: string[], folderPaths?: string[], resume = false, mode?: ScanMode, additionalDrivePaths: string[] = []): Promise<DocumentScanResult> {
         if (!this.db) throw new Error('SQLite is not initialized');
-        if (this.documentScan) throw new Error('Document scanning is already running');
+        if (this.documentScan || this.folderScanRunning) throw new Error('[SCAN_BUSY] Indexing is already running');
         const controller = new AbortController();
         this.documentScan = controller;
         const { signal } = controller;
+        const textReader = createScanTextReader(signal);
         let visibility: ReturnType<typeof createAsyncFileVisibilityFilter> | undefined;
         try {
             const saved = resume ? this.documentScanStatus() : null;
-            if (resume && !saved?.resumable) throw new Error('No scan to resume');
-            if (saved) { drivePath = saved.drivePath; requestedExtensions = saved.extensions; folderPaths = saved.folderPaths; }
+            if (resume && !saved?.resumable) throw new Error('[SCAN_RESUME] No scan to resume');
+            if (saved) {
+                ({ drivePath, extensions: requestedExtensions, folderPaths } = saved);
+                additionalDrivePaths = saved.additionalDrivePaths ?? [];
+            }
+            mode = normalizeScanMode((saved ? saved.mode : mode) ?? this.catalog.scanMode);
+            const { profileFor, widthFor } = createStorageStrategy(mode);
             const extensions = new Set((Array.isArray(requestedExtensions) ? requestedExtensions : [])
                 .map(extension => String(extension).trim().replace(/^\./, '').toLowerCase())
-                .filter(extension => OS_DOCUMENT_EXTENSIONS.has(extension)));
-            if (!extensions.size) throw new Error('Select at least one document extension before scanning');
-            const roots = await this.documentScanRoots(drivePath, folderPaths);
+                .filter(extension => searchableFileExtensions.has(extension)));
+            if (!extensions.size) throw new Error('[SCAN_EXTENSIONS] Select at least one document extension before scanning');
+            if (!Array.isArray(additionalDrivePaths) || additionalDrivePaths.length > 25 ||
+                additionalDrivePaths.some(drive => typeof drive !== 'string' || !path.isAbsolute(drive))) {
+                throw new Error('[SCAN_DRIVE] Choose available drives before scanning');
+            }
+            if (additionalDrivePaths.length && folderPaths) throw new Error('[SCAN_SCOPE] Multi-drive scans require whole drives');
+            const drives = this.listScanDrives();
+            const roots = [...new Set((await Promise.all([
+                this.documentScanRoots(drivePath, folderPaths, drives),
+                ...additionalDrivePaths.map(drive => this.documentScanRoots(drive, undefined, drives)),
+            ])).flat())];
+            // Nested mounts are already visited from their ancestor. Avoid a second traversal.
+            const scanRoots = roots.filter(root => !roots.some(parent => {
+                if (parent === root) return false;
+                const relative = path.relative(parent, root);
+                return relative === '' ? roots.indexOf(parent) < roots.indexOf(root) :
+                    relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+            }));
             const stored = resume ? this.db.prepare('SELECT config FROM document_scan_job WHERE id=1').get() as {config: string} : null;
             const includeSystemFiles: boolean = stored ? JSON.parse(stored.config).includeSystemFiles : this.includeSystemFiles;
             if (!resume) {
-                const config = JSON.stringify({drivePath, extensions: [...extensions], ...(folderPaths ? {folderPaths: roots} : {}), includeSystemFiles});
+                const config = JSON.stringify({
+                    drivePath, mode, extensions: [...extensions], ...(folderPaths ? {folderPaths: scanRoots} : {}),
+                    ...(additionalDrivePaths.length ? {additionalDrivePaths} : {}), includeSystemFiles,
+                });
+                const laneKeys = new Map<string, number>();
+                const assignments: string[] = [];
+                for (const root of scanRoots) {
+                    if (!additionalDrivePaths.length) {
+                        assignments.push('single');
+                        continue;
+                    }
+                    const stat = await fs.promises.stat(root).catch(() => null);
+                    const profile = stat && await profileFor(root, stat.dev, true);
+                    // Volumes on one physical disk share a lane. Unidentified HDDs do too.
+                    const volume = process.platform === 'win32' ? path.parse(root).root.toLowerCase() : String(stat?.dev);
+                    assignments.push(profile?.disk ? 'disk:' + profile.disk :
+                        profile?.width === 8 ? 'volume:' + volume : 'serial');
+                }
                 this.db.transaction(() => {
-                    this.db!.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job;');
-                    this.db!.prepare("INSERT INTO document_scan_job(id,config,phase) VALUES(1,?,'metadata')").run(config);
-                    const enqueue = this.db!.prepare("INSERT OR IGNORE INTO document_scan_queue(kind,path) VALUES('directory',?)");
-                    for (const root of roots) enqueue.run(root);
+                    this.db!.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job; DELETE FROM document_scan_skips;');
+                    this.db!.prepare("INSERT INTO document_scan_job(id,config,phase,files_checked) VALUES(1,?,'metadata',0)").run(config);
+                    const enqueue = this.db!.prepare("INSERT OR IGNORE INTO document_scan_queue(kind,path,lane) VALUES('directory',?,?)");
+                    for (const [index, root] of scanRoots.entries()) {
+                        const key = assignments[index]!;
+                        if (!laneKeys.has(key)) laneKeys.set(key, laneKeys.size);
+                        enqueue.run(root, laneKeys.get(key)!);
+                    }
                 })();
             }
-            visibility = createAsyncFileVisibilityFilter(signal);
+            const scanVisibility = createAsyncFileVisibilityFilter(signal);
+            visibility = scanVisibility;
             const insideRoots = (target: string) => roots.some(root => {
                 const relative = path.relative(root, target);
                 return relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
             });
-            const nextDirectory = this.db.prepare("SELECT id,path FROM document_scan_queue WHERE kind='directory' ORDER BY id LIMIT 1");
-            const enqueue = this.db.prepare('INSERT INTO document_scan_queue(kind,path,size,mtime) VALUES(@kind,@path,@size,@mtime) ON CONFLICT(kind,path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime');
-            const dequeue = this.db.prepare('DELETE FROM document_scan_queue WHERE id=?');
-            const previousFile = this.db.prepare('SELECT f.size,f.mtime,p.path AS needs_content FROM files f LEFT JOIN document_scan_pending_content p ON p.path=f.path WHERE f.path=? AND f.is_deleted=0');
-            const markPending = this.db.prepare('INSERT INTO document_scan_pending_content(path,size,mtime) VALUES(@path,@size,@mtime) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime');
-            const textExtensions = this.readTextExtensions();
-            let skipped = 0;
-            let metadata: IndexedFile[] = [];
-            let queued: Array<{kind: string; path: string; size: number | null; mtime: number | null}> = [];
-            const flushMetadata = (completedDirectory?: number) => {
-                if (!metadata.length && !queued.length && !skipped && completedDirectory === undefined) return;
-                this.db!.transaction(() => {
-                    if (metadata.length) this.saveFiles(metadata);
-                    for (const item of queued) {
-                        enqueue.run(item);
-                        if (item.kind === 'content') markPending.run({path:item.path,size:item.size,mtime:item.mtime});
-                    }
-                    if (completedDirectory !== undefined) dequeue.run(completedDirectory);
-                    this.db!.prepare('UPDATE document_scan_job SET indexed_count=indexed_count+?, skipped_count=skipped_count+? WHERE id=1').run(metadata.length, skipped);
-                })();
-                metadata = []; queued = []; skipped = 0;
-            };
-            while (!signal.aborted) {
-                const directory = nextDirectory.get() as {id: number; path: string} | undefined;
-                if (!directory) break;
-                let completed = false;
-                try {
-                    const stat = await fs.promises.lstat(directory.path);
-                    const canonical = await fs.promises.realpath(directory.path);
-                    if (!stat.isDirectory() || stat.isSymbolicLink() || !insideRoots(canonical) || (!includeSystemFiles && await visibility.isHidden(directory.path))) {
-                        skipped++; completed = true;
-                    } else {
-                        const handle = await fs.promises.opendir(directory.path);
-                        completed = true;
-                        for await (const entry of handle) {
-                            if (signal.aborted) { completed = false; break; }
-                            const entryPath = path.join(directory.path, entry.name);
-                            if (entry.isSymbolicLink()) continue;
-                            if (entry.isDirectory()) {
-                                if (OS_SCAN_IGNORED_DIRECTORIES.has(entry.name.toLowerCase())) continue;
-                                if (process.platform !== 'win32' && path.dirname(directory.path) === path.parse(directory.path).root && OS_SCAN_IGNORED_UNIX_ROOTS.has(entry.name.toLowerCase())) continue;
-                                queued.push({kind:'directory',path:entryPath,size:null,mtime:null});
-                            } else if (entry.isFile()) {
-                                const extension = path.extname(entry.name).slice(1).toLowerCase();
-                                if (!extensions.has(extension)) continue;
-                                try {
-                                    if (!includeSystemFiles && await visibility.isHidden(entryPath)) { skipped++; continue; }
-                                    const fileStat = await fs.promises.lstat(entryPath);
-                                    if (signal.aborted) { completed = false; break; }
-                                    if (!fileStat.isFile() || fileStat.isSymbolicLink()) continue;
-                                    const mtime = Math.floor(fileStat.mtimeMs);
-                                    const existing = previousFile.get(entryPath) as {size:number;mtime:number;needs_content?:string} | undefined;
-                                    if (!existing || existing.size !== fileStat.size || existing.mtime !== mtime) {
-                                        metadata.push({path:entryPath,name:entry.name,extension,size:fileStat.size,mtime,content:''});
-                                        if (textExtensions.has('.'+extension) && fileStat.size <= 2*1024*1024) queued.push({kind:'content',path:entryPath,size:fileStat.size,mtime});
-                                    } else if (existing.needs_content && textExtensions.has('.'+extension) && fileStat.size <= 2*1024*1024) {
-                                        queued.push({kind:'content',path:entryPath,size:fileStat.size,mtime});
-                                    }
-                                } catch {
-                                    if (!signal.aborted && visibility.failure) throw visibility.failure;
-                                    if (!signal.aborted) skipped++;
-                                }
-                            }
-                            if (metadata.length >= 100 || queued.length >= 100) {
-                                flushMetadata();
-                                await new Promise<void>(resolve => setImmediate(resolve));
-                            }
-                        }
-                        if (signal.aborted) completed = false;
-                    }
-                } catch {
-                    if (!signal.aborted && visibility.failure) throw visibility.failure;
-                    if (!signal.aborted) { skipped++; completed = true; }
-                }
-                flushMetadata(completed ? directory.id : undefined);
-            }
-            if (!signal.aborted) this.db.prepare("UPDATE document_scan_job SET phase='content' WHERE id=1").run();
-            const clearPending = this.db.prepare('DELETE FROM document_scan_pending_content WHERE path=? AND size=? AND mtime=?');
-            const updateContent = this.db.prepare('UPDATE files SET content=? WHERE path=? AND size=? AND mtime=? AND is_deleted=0');
-            const nextContents = this.db.prepare("SELECT id,path,size,mtime FROM document_scan_queue WHERE kind='content' ORDER BY id LIMIT 100");
-            while (!signal.aborted) {
-                const items = nextContents.all() as Array<{id:number;path:string;size:number;mtime:number}>;
-                if (!items.length) break;
-                const finished: Array<{id:number;path:string;size:number;mtime:number;content?:string}> = [];
-                let contentBytes = 0;
-                skipped = 0;
-                for (const item of items) {
-                    if (signal.aborted) break;
+            const lanes = (this.db.prepare('SELECT DISTINCT lane FROM document_scan_queue ORDER BY lane').all() as { lane: number }[])
+                .map(row => row.lane);
+            // Keep the total I/O budget at eight reads even with two active disks.
+            const maxReadsPerLane = lanes.length > 1 ? 4 : 8;
+            const laneWidth = async (folder: string, device: number) => Math.min(await widthFor(folder, device), maxReadsPerLane);
+            const runLanes = async (run: (lane: number) => Promise<void>) => {
+                let nextLane = 0;
+                const workers = Array.from({ length: Math.min(2, lanes.length) }, async () => {
                     try {
-                        const stat = await fs.promises.lstat(item.path);
-                        const canonical = await fs.promises.realpath(item.path);
-                        if (!stat.isFile() || stat.isSymbolicLink() || !insideRoots(canonical) || stat.size !== item.size || Math.floor(stat.mtimeMs) !== item.mtime || (!includeSystemFiles && await visibility.isHidden(item.path))) {
-                            skipped++; finished.push(item); continue;
+                        while (!signal.aborted && nextLane < lanes.length) await run(lanes[nextLane++]!);
+                    } catch (cause) {
+                        controller.abort();
+                        throw cause;
+                    }
+                });
+                const results = await Promise.allSettled(workers);
+                for (const result of results) if (result.status === 'rejected') throw result.reason;
+            };
+            const nextDirectory = this.db.prepare("SELECT id,path FROM document_scan_queue WHERE kind='directory' AND lane=? ORDER BY id LIMIT 1");
+            const enqueue = this.db.prepare('INSERT INTO document_scan_queue(kind,path,size,mtime,indexed_in_job,lane) VALUES(@kind,@path,@size,@mtime,@indexed,@lane) ON CONFLICT(kind,path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime,indexed_in_job=MAX(indexed_in_job,excluded.indexed_in_job)');
+            const dequeue = this.db.prepare('DELETE FROM document_scan_queue WHERE id=?');
+            const previousFile = this.db.prepare("SELECT f.size,f.mtime,CASE WHEN f.text_indexed=1 THEN 1 ELSE f.content<>'' END AS text_ready,p.path AS needs_content FROM files f LEFT JOIN document_scan_pending_content p ON p.path=f.path WHERE f.path=? AND f.is_deleted=0");
+            const markPending = this.db.prepare('INSERT INTO document_scan_pending_content(path,size,mtime) VALUES(@path,@size,@mtime) ON CONFLICT(path) DO UPDATE SET size=excluded.size,mtime=excluded.mtime');
+            const recordSkip = this.db.prepare('INSERT OR IGNORE INTO document_scan_skips(path) VALUES(?)');
+            const commitSkips = (skipped: Set<string>) => {
+                let count = 0;
+                for (const skippedPath of skipped) {
+                    const key = process.platform === 'win32' ? skippedPath.toLowerCase() : skippedPath;
+                    count += recordSkip.run(key).changes;
+                }
+                return count;
+            };
+            const clearPending = this.db.prepare('DELETE FROM document_scan_pending_content WHERE path=? AND size=? AND mtime=?');
+            const updateContent = this.db.prepare('UPDATE files SET content=?,text_indexed=1 WHERE path=? AND size=? AND mtime=? AND is_deleted=0');
+            const hideProtectedFile = this.db.prepare('UPDATE files SET is_deleted=1 WHERE path=? AND size=? AND mtime=? AND is_deleted=0');
+            const nextContents = this.db.prepare("SELECT id,path,size,mtime,indexed_in_job FROM document_scan_queue WHERE kind='content' AND lane=? ORDER BY id LIMIT ?");
+            const processContentBatch = async (lane: number, limit: number): Promise<boolean> => {
+                if (signal.aborted) return false;
+                const items = nextContents.all(lane, limit) as Array<{id:number;path:string;size:number;mtime:number;indexed_in_job:number}>;
+                if (!items.length) return false;
+                const finished: Array<{id:number;path:string;size:number;mtime:number;indexed_in_job:number;content?:string;protected?:boolean}> = [];
+                let contentBytes = 0;
+                let currentDirectory = '';
+                let width = 1;
+                for (let i = 0; i < items.length && !signal.aborted && contentBytes < 4 * 1024 * 1024;) {
+                    const directory = path.dirname(items[i]!.path);
+                    if (directory !== currentDirectory) {
+                        currentDirectory = directory;
+                        const stat = await fs.promises.stat(directory).catch(() => null);
+                        width = stat ? await laneWidth(directory, stat.dev) : 1;
+                    }
+                    const group: typeof items = [];
+                    let groupBytes = 0;
+                    while (i < items.length && group.length < width && path.dirname(items[i]!.path) === directory) {
+                        const item = items[i]!;
+                        if (group.length && groupBytes + item.size > 4 * 1024 * 1024) break;
+                        group.push(item);
+                        groupBytes += item.size;
+                        i++;
+                    }
+                    const results = await Promise.all(group.map(async item => {
+                        if (signal.aborted) return item;
+                        try {
+                            const stat = await fs.promises.lstat(item.path);
+                            const canonical = await fs.promises.realpath(item.path);
+                            if (!stat.isFile() || stat.isSymbolicLink() || !insideRoots(canonical) || stat.size !== item.size || Math.floor(stat.mtimeMs) !== item.mtime) return item;
+                            if (!includeSystemFiles && await scanVisibility.isHidden(item.path)) return { ...item, protected: true };
+                            const content = await textReader.read(item.path, path.extname(item.path).slice(1).toLowerCase(), fs.promises.readFile);
+                            const after = await fs.promises.stat(item.path);
+                            if (after.size !== item.size || Math.floor(after.mtimeMs) !== item.mtime) return item;
+                            return { ...item, content };
+                        } catch (cause) {
+                            return isAccessDenied(cause) ? { ...item, protected: true } : item;
                         }
-                        const content = await fs.promises.readFile(item.path, {encoding:'utf8',signal});
-                        if (signal.aborted) break;
-                        const after = await fs.promises.stat(item.path);
-                        if (after.size !== item.size || Math.floor(after.mtimeMs) !== item.mtime) { skipped++; finished.push(item); continue; }
-                        finished.push({...item,content}); contentBytes += content.length;
-                        if (contentBytes >= 4*1024*1024) break;
-                    } catch {
-                        if (signal.aborted) break;
-                        if (visibility.failure) throw visibility.failure;
-                        skipped++; finished.push(item);
+                    }));
+                    if (signal.aborted) break;
+                    if (scanVisibility.failure) throw new Error('[SCAN_ACCESS] File protection check failed', { cause: scanVisibility.failure });
+                    for (const item of results) {
+                        finished.push(item);
+                        if ('content' in item) contentBytes += item.content.length;
                     }
                 }
-                if (finished.length) this.db.transaction(() => {
+                const commitContent = this.db!.transaction((batch: typeof finished) => {
+                    const skipped = new Set<string>();
                     let count = 0;
-                    for (const item of finished) {
-                        if (item.content !== undefined) { updateContent.run(item.content,item.path,item.size,item.mtime); clearPending.run(item.path,item.size,item.mtime); count++; }
+                    let removed = 0;
+                    for (const item of batch) {
+                        if (item.content !== undefined) {
+                            updateContent.run(item.content,item.path,item.size,item.mtime);
+                            clearPending.run(item.path,item.size,item.mtime);
+                            count++;
+                        } else if (item.protected) {
+                            const hidden = hideProtectedFile.run(item.path,item.size,item.mtime).changes;
+                            removed += hidden * item.indexed_in_job;
+                            clearPending.run(item.path,item.size,item.mtime);
+                        }
+                        if (item.content === undefined) skipped.add(item.path);
                         dequeue.run(item.id);
                     }
-                    this.db!.prepare('UPDATE document_scan_job SET content_count=content_count+?, skipped_count=skipped_count+? WHERE id=1').run(count,skipped);
-                })();
-                await new Promise<void>(resolve => setImmediate(resolve));
-            }
+                    this.db!.prepare('UPDATE document_scan_job SET content_count=content_count+?, skipped_count=skipped_count+?, content_processed=COALESCE(content_processed,content_count)+?, indexed_count=indexed_count-? WHERE id=1').run(count,commitSkips(skipped),batch.length,removed);
+                });
+                // SQLite/FTS writes are synchronous. Give the main loop a turn between small transactions.
+                for (let start = 0; start < finished.length && !signal.aborted;) {
+                    let end = start;
+                    let bytes = 0;
+                    do {
+                        bytes += finished[end++]!.content?.length ?? 0;
+                    } while (end < finished.length && end - start < 32 && bytes < 512 * 1024);
+                    commitContent(finished.slice(start, end));
+                    start = end;
+                    await yieldScan();
+                }
+                return finished.length > 0;
+            };
+            const checkpoint = this.db.prepare('SELECT files_checked FROM document_scan_job WHERE id=1').get() as { files_checked: number | null };
+            await runLanes(async lane => {
+                const skipped = new Set<string>();
+                let completedFiles = lanes.length === 1 ? checkpoint.files_checked ?? saved?.indexedCount ?? 0 : 0;
+                let lastEarlyBatch = EARLY_CONTENT_THRESHOLD - EARLY_CONTENT_INTERVAL;
+                const shouldIndexEarly = (checked: number) =>
+                    checked >= EARLY_CONTENT_THRESHOLD && checked - lastEarlyBatch >= EARLY_CONTENT_INTERVAL;
+                const indexEarly = async (checked: number, width: number) => {
+                    lastEarlyBatch = checked;
+                    // Alternate discovery and content batches. HDDs retain one reader and never seek between concurrent reads.
+                    await processContentBatch(lane, width === 1 ? 32 : 100);
+                };
+                let metadata: IndexedFile[] = [];
+                let queued: Array<{kind: string; path: string; size: number | null; mtime: number | null; indexed: number}> = [];
+                const flushMetadata = (completedDirectory?: { id: number; filesChecked: number }) => {
+                    if (!metadata.length && !queued.length && !skipped.size && completedDirectory === undefined) return;
+                    this.db!.transaction(() => {
+                        if (metadata.length) this.saveFiles(metadata);
+                        for (const item of queued) {
+                            enqueue.run({ ...item, lane });
+                            if (item.kind === 'content') markPending.run({path:item.path,size:item.size,mtime:item.mtime});
+                        }
+                        if (completedDirectory) dequeue.run(completedDirectory.id);
+                        this.db!.prepare('UPDATE document_scan_job SET indexed_count=indexed_count+?, skipped_count=skipped_count+?, files_checked=files_checked+? WHERE id=1').run(metadata.length, commitSkips(skipped), completedDirectory?.filesChecked ?? 0);
+                    })();
+                    metadata = []; queued = []; skipped.clear();
+                };
+                while (!signal.aborted) {
+                    const directory = nextDirectory.get(lane) as {id: number; path: string} | undefined;
+                    if (!directory) break;
+                    let completed = false;
+                    let filesChecked = 0;
+                    try {
+                        const stat = await fs.promises.lstat(directory.path);
+                        const canonical = await fs.promises.realpath(directory.path);
+                        if (!stat.isDirectory() || stat.isSymbolicLink() || !insideRoots(canonical) || (!includeSystemFiles && await scanVisibility.isHidden(directory.path))) {
+                            skipped.add(directory.path); completed = true;
+                        } else {
+                            const handle = await fs.promises.opendir(directory.path);
+                            completed = true;
+                            const width = await laneWidth(canonical, stat.dev);
+                            let candidates: Array<{ entryPath: string; name: string; extension: string }> = [];
+                            const inspectFiles = async () => {
+                                const results = await Promise.all(candidates.map(async candidate => {
+                                    try {
+                                        if (!includeSystemFiles && await scanVisibility.isHidden(candidate.entryPath)) return null;
+                                        const stat = await fs.promises.lstat(candidate.entryPath);
+                                        if (!stat.isFile() || stat.isSymbolicLink()) return null;
+                                        await verifyScanReadable(candidate.entryPath);
+                                        return { ...candidate, stat };
+                                    } catch { return null; }
+                                }));
+                                const batch = candidates;
+                                candidates = [];
+                                if (signal.aborted) return;
+                                if (scanVisibility.failure) throw new Error('[SCAN_ACCESS] File protection check failed', { cause: scanVisibility.failure });
+                                for (const [i, result] of results.entries()) {
+                                    if (!result) { skipped.add(batch[i]!.entryPath); continue; }
+                                    filesChecked++;
+                                    const { entryPath, name, extension, stat } = result;
+                                    const mtime = Math.floor(stat.mtimeMs);
+                                    const existing = previousFile.get(entryPath) as { size: number; mtime: number; needs_content?: string; text_ready: number } | undefined;
+                                    const changed = !existing || existing.size !== stat.size || existing.mtime !== mtime;
+                                    if (changed) metadata.push({ path: entryPath, name, extension, size: stat.size, mtime, content: '' });
+                                    if ((changed || existing?.needs_content || !existing?.text_ready) && canIndexText(extension, stat.size)) {
+                                        queued.push({ kind: 'content', path: entryPath, size: stat.size, mtime, indexed: Number(changed) });
+                                    }
+                                }
+                            };
+                            for await (const entry of handle) {
+                                if (signal.aborted) break;
+                                const entryPath = path.join(directory.path, entry.name);
+                                if (entry.isSymbolicLink()) continue;
+                                if (entry.isDirectory()) {
+                                    const name = entry.name.toLowerCase();
+                                    const systemRoot = process.platform !== 'win32' && directory.path === path.parse(directory.path).root;
+                                    if (OS_SCAN_IGNORED_DIRECTORIES.has(name) || (systemRoot && OS_SCAN_IGNORED_UNIX_ROOTS.has(name))) skipped.add(entryPath);
+                                    else queued.push({ kind: 'directory', path: entryPath, size: null, mtime: null, indexed: 0 });
+                                } else if (entry.isFile()) {
+                                    const extension = path.extname(entry.name).slice(1).toLowerCase();
+                                    if (!extensions.has(extension)) continue;
+                                    candidates.push({ entryPath, name: entry.name, extension });
+                                    if (candidates.length >= Math.min(width, 100 - metadata.length, 100 - queued.length)) await inspectFiles();
+                                }
+                                const checked = completedFiles + filesChecked;
+                                const early = shouldIndexEarly(checked);
+                                if (metadata.length >= 100 || queued.length >= 100 || skipped.size >= 100 || early) {
+                                    flushMetadata();
+                                    if (early) await indexEarly(checked, width);
+                                    else await yieldScan();
+                                }
+                            }
+                            if (!signal.aborted && candidates.length) await inspectFiles();
+                            if (signal.aborted) completed = false;
+                        }
+                    } catch (cause) {
+                        if (!signal.aborted && scanVisibility.failure) throw new Error('[SCAN_ACCESS] File protection check failed', { cause: scanVisibility.failure });
+                        if (!signal.aborted) {
+                            const code = (cause as NodeJS.ErrnoException)?.code;
+                            if (!code || !/^E[A-Z]+$/.test(code)) throw cause;
+                            skipped.add(directory.path);
+                            completed = true;
+                        }
+                    }
+                    // An interrupted directory is checked again on resume. Count it only when dequeued.
+                    flushMetadata(completed ? { id: directory.id, filesChecked } : undefined);
+                    if (completed) {
+                        completedFiles += filesChecked;
+                        if (!signal.aborted && shouldIndexEarly(completedFiles)) {
+                            // Use the smaller batch at a directory boundary, where the next volume is unknown.
+                            await indexEarly(completedFiles, 1);
+                        }
+                    }
+                }
+            });
+            if (!signal.aborted) this.db.prepare(`
+                UPDATE document_scan_job SET phase='content',
+                    content_total=COALESCE(content_total, COALESCE(content_processed, content_count) + (SELECT COUNT(*) FROM document_scan_queue WHERE kind='content')),
+                    content_processed=COALESCE(content_processed, content_count)
+                WHERE id=1
+            `).run();
+            await runLanes(async lane => {
+                while (await processContentBatch(lane, 100)) { /* Drain the remaining queue. */ }
+            });
             const result = this.documentScanStatus();
             if (!signal.aborted) this.db.transaction(() => {
-                this.db!.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job;');
+                this.db!.exec('DELETE FROM document_scan_queue; DELETE FROM document_scan_job; DELETE FROM document_scan_skips;');
             })();
             return {indexedCount:result.indexedCount,skippedCount:result.skippedCount,cancelled:signal.aborted};
         } finally {
             visibility?.dispose();
+            textReader.dispose();
             if (this.documentScan === controller) this.documentScan = null;
         }
-    }
-
-    private readTextExtensions() {
-        return new Set([
-            '.tsv', '.txt', '.md', '.markdown', '.csv', '.json', '.xml', '.html', '.htm',
-            '.js', '.ts', '.vue', '.css', '.scss', '.yaml', '.yml', '.log', '.sql', '.py', '.java', '.c', '.cpp', '.h', '.sh',
-        ]);
     }
 
     private rememberFolder(folderPath: string): void {
@@ -447,7 +865,7 @@ class DatabaseManager {
         const name = path.basename(filePath);
         const extension = path.extname(name).toLowerCase().replace(/^\./, '');
         let content = '';
-        if (this.readTextExtensions().has(`.${extension}`) && stat.size <= 2 * 1024 * 1024) {
+        if (canIndexText(extension, stat.size) && !isRichDocument(extension)) {
             content = fs.readFileSync(filePath, 'utf8');
         }
         this.saveFile({
@@ -461,6 +879,26 @@ class DatabaseManager {
         const workspace = folderPath && fs.existsSync(folderPath) ? folderPath : path.dirname(filePath);
         this.rememberFolder(workspace);
         return { folderPath: workspace, indexedCount: 1, skippedCount: 0, limit: 1 };
+    }
+
+    public async indexImportedFile(filePath: string, folderPath?: string) {
+        const result = this.indexSingleFile(filePath, folderPath);
+        const extension = path.extname(filePath).slice(1).toLowerCase();
+        if (!isRichDocument(extension) || !this.db) return result;
+        const db = this.db;
+        const row = db.prepare('SELECT size, mtime FROM files WHERE path=?').get(filePath) as { size: number; mtime: number } | undefined;
+        if (!row || !canIndexText(extension, row.size)) return result;
+        try {
+            const content = await readIndexedText(filePath, extension);
+            const stat = await fs.promises.stat(filePath);
+            if (stat.size === row.size && Math.floor(stat.mtimeMs) === row.mtime && db.open) {
+                db.prepare('UPDATE files SET content=?, text_indexed=1 WHERE path=? AND size=? AND mtime=? AND is_deleted=0')
+                    .run(content, filePath, row.size, row.mtime);
+            }
+        } catch (cause) {
+            console.warn('Could not extract text from imported document:', cause instanceof Error ? cause.name : 'Unknown error');
+        }
+        return result;
     }
 
     public createFileInFolder(folderPath: string, fileName: string, content: string, bytes?: Buffer): { folderPath: string; indexedCount: number; skippedCount: number; limit: number } {
@@ -524,12 +962,12 @@ class DatabaseManager {
         const target = this.workspaceTarget(folderPath);
         if (!this.isFileVisible(source)) throw new Error('Hidden and system files are excluded');
         if (path.relative(path.dirname(fs.realpathSync(source)),fs.realpathSync(target)) === '') {
-            this.indexSingleFile(source,folderPath); return source;
+            await this.indexImportedFile(source,folderPath); return source;
         }
         const limit = Math.max(1,Math.min(5000,Math.floor(maxFiles)||1000));
         if ((this.listFolders().find(folder => folder.path === folderPath)?.count ?? 0) >= limit) throw new Error('Folder limit reached');
         const placed = await placeWorkspaceFile(source,target,false,candidate => Boolean(this.db!.prepare('SELECT 1 FROM files WHERE path=?').get(candidate)));
-        try { this.indexSingleFile(placed.destination,folderPath); }
+        try { await this.indexImportedFile(placed.destination,folderPath); }
         catch (error) { await fs.promises.unlink(placed.destination).catch(() => {}); throw error; }
         return placed.destination;
     }
@@ -566,7 +1004,7 @@ class DatabaseManager {
                 placed = await placeWorkspaceFile(source,target,request.mode==='move',candidate => Boolean(this.db!.prepare('SELECT 1 FROM files WHERE path=?').get(candidate)));
                 const unchanged = record.size === placed.original.size && Math.floor(record.mtime) === Math.floor(placed.original.mtimeMs);
                 let content = unchanged ? record.content : '';
-                if (this.readTextExtensions().has('.'+record.extension) && placed.stat.size <= 2*1024*1024 && (!content || record.size !== placed.original.size || Math.floor(record.mtime) !== Math.floor(placed.original.mtimeMs))) {
+                if (canIndexText(record.extension, placed.stat.size) && !isRichDocument(record.extension) && (!content || record.size !== placed.original.size || Math.floor(record.mtime) !== Math.floor(placed.original.mtimeMs))) {
                     content = await fs.promises.readFile(placed.destination,'utf8');
                 }
                 const destination = placed.destination, snapshot = placed;
@@ -601,7 +1039,7 @@ class DatabaseManager {
                 }
                 result.failed.push({fileId,message:error instanceof Error ? error.message : String(error)});
             }
-            await new Promise<void>(resolve => setImmediate(resolve));
+            await yieldScan();
         }
         return result;
     }
@@ -616,15 +1054,23 @@ class DatabaseManager {
         if (!this.db) return [];
         const folders = this.db.prepare('SELECT name, path FROM indexed_folders ORDER BY name COLLATE NOCASE')
             .all() as Array<{ name: string; path: string }>;
-        const activePaths = (this.db.prepare('SELECT path FROM files WHERE is_deleted = 0 AND owlsift_file_visible(path) = 1').all() as Array<{ path: string }>)
-            .map(({ path: filePath }) => filePath);
-        return folders.filter(folder => this.isFileVisible(folder.path)).map((folder) => ({
-            ...folder,
-            count: activePaths.filter((filePath) => {
-                const relative = path.relative(folder.path, filePath);
-                return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
-            }).length,
-        }));
+        const visibleFolders = folders.filter(folder => this.isFileVisible(folder.path));
+        if (!visibleFolders.length) return [];
+        const keyFor = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+        const keys = visibleFolders.map(folder => keyFor(path.resolve(folder.path)));
+        const counts = new Map(keys.map(key => [key, 0]));
+        const activePaths = this.db.prepare('SELECT path FROM files WHERE is_deleted = 0 AND owlsift_file_visible(path) = 1')
+            .iterate() as Iterable<{ path: string }>;
+        for (const { path: filePath } of activePaths) {
+            let current = path.resolve(filePath);
+            for (let parent = path.dirname(current); parent !== current; parent = path.dirname(current)) {
+                const key = keyFor(parent);
+                const count = counts.get(key);
+                if (count !== undefined) counts.set(key, count + 1);
+                current = parent;
+            }
+        }
+        return visibleFolders.map((folder, index) => ({ ...folder, count: counts.get(keys[index]!) ?? 0 }));
     }
 
     public listFiles(): IndexedFileRecord[] {
@@ -726,17 +1172,20 @@ class DatabaseManager {
         `).run(fileId, note, Date.now());
     }
 
-    private attachTags(records: IndexedFileRecord[]): IndexedFileRecord[] {
+    private attachTags(records: IndexedFileRecord[], limitLookup = false): IndexedFileRecord[] {
         if (!this.db || records.length === 0) return records;
+        const ids = limitLookup && records.length <= 500 ? JSON.stringify(records.map(record => record.id)) : undefined;
+        const where = ids === undefined ? '' : ' WHERE file_id IN (SELECT value FROM json_each(?))';
+        const parameters = ids === undefined ? [] : [ids];
         const tagsById = new Map<number, string[]>();
-        const rows = this.db.prepare('SELECT file_id, tag FROM file_tags ORDER BY tag COLLATE NOCASE')
-            .all() as Array<{ file_id: number; tag: string }>;
+        const rows = this.db.prepare('SELECT file_id, tag FROM file_tags' + where + ' ORDER BY tag COLLATE NOCASE')
+            .all(...parameters) as Array<{ file_id: number; tag: string }>;
         for (const { file_id, tag } of rows) {
             const tags = tagsById.get(file_id) ?? [];
             tags.push(tag);
             tagsById.set(file_id, tags);
         }
-        const notes = new Map((this.db.prepare('SELECT file_id, note FROM file_notes').all() as Array<{ file_id: number; note: string }>)
+        const notes = new Map((this.db.prepare('SELECT file_id, note FROM file_notes' + where).all(...parameters) as Array<{ file_id: number; note: string }>)
             .map(({ file_id, note }) => [file_id, note]));
         return records.map((record) => ({
             ...record,
@@ -745,7 +1194,7 @@ class DatabaseManager {
         }));
     }
 
-    public getImagePreview(fileId: number): string | null {
+    public async getImagePreview(fileId: number): Promise<string | null> {
         if (!this.db || !Number.isInteger(fileId)) return null;
 
         const file = this.db.prepare('SELECT path, extension FROM files WHERE id = ?').get(fileId) as
@@ -760,9 +1209,9 @@ class DatabaseManager {
         if (!mimeType) return null;
 
         try {
-            const stat = fs.statSync(file.path);
+            const stat = await fs.promises.stat(file.path);
             if (!stat.isFile() || stat.size === 0 || stat.size > 10 * 1024 * 1024) return null;
-            return `data:${mimeType};base64,${fs.readFileSync(file.path).toString('base64')}`;
+            return `data:${mimeType};base64,${(await fs.promises.readFile(file.path)).toString('base64')}`;
         } catch (error) {
             console.warn(`Could not load image preview for indexed file ${fileId}:`, error);
             return null;
@@ -833,6 +1282,9 @@ class DatabaseManager {
         if (!columns.some((column) => column.name === 'content')) {
             this.db.exec("ALTER TABLE files ADD COLUMN content TEXT NOT NULL DEFAULT ''");
         }
+        if (!columns.some(column => column.name === 'text_indexed')) {
+            this.db.exec('ALTER TABLE files ADD COLUMN text_indexed INTEGER NOT NULL DEFAULT 0');
+        }
         if (!columns.some((column) => column.name === 'is_deleted')) {
             this.db.exec('ALTER TABLE files ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0');
         }
@@ -865,7 +1317,7 @@ class DatabaseManager {
       CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
         INSERT INTO files_fts(files_fts, rowid, name, content) VALUES('delete', old.id, old.name, old.content);
       END;
-      CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+      CREATE TRIGGER files_au AFTER UPDATE OF name,content ON files WHEN old.name <> new.name OR old.content <> new.content BEGIN
         INSERT INTO files_fts(files_fts, rowid, name, content) VALUES('delete', old.id, old.name, old.content);
         INSERT INTO files_fts(rowid, name, content) VALUES (new.id, new.name, new.content);
       END;
@@ -882,66 +1334,20 @@ class DatabaseManager {
     public saveFiles(files: IndexedFile[]): void {
         if (!this.db || !files.length) return;
         this.fileUpsert ??= this.db.prepare(`
-            INSERT INTO files (path,name,extension,size,mtime,content)
-            VALUES (@path,@name,@extension,@size,@mtime,@content)
+            INSERT INTO files (path,name,extension,size,mtime,content,text_indexed)
+            VALUES (@path,@name,@extension,@size,@mtime,@content,@textIndexed)
             ON CONFLICT(path) DO UPDATE SET name=excluded.name, extension=excluded.extension,
-                size=excluded.size, mtime=excluded.mtime, content=excluded.content, is_deleted=0
+                size=excluded.size, mtime=excluded.mtime, content=excluded.content, text_indexed=excluded.text_indexed, is_deleted=0
         `);
-        this.db.transaction(() => { for (const file of files) this.fileUpsert!.run(file); })();
+        this.db.transaction(() => { for (const file of files) this.fileUpsert!.run({ ...file, textIndexed: Number(file.textIndexed === true) }); })();
     }
 
     /**
      * Полнотекстовый поиск по FTS5 с подсветкой найденого фрагмента
      */
     public search(query: string, limit = 50): IndexedFileRecord[] {
-        if (!this.db || !query.trim()) return [];
-
-        // Преобразуем запрос для префиксного поиска (например: "догов*" найдет "договор", "договора")
-        const formattedQuery = query
-            .trim()
-            .split(/\s+/)
-            .map((term) => `${term}*`)
-            .join(' ');
-
-        const stmt = this.db.prepare(`
-      SELECT 
-        f.id,
-        f.path,
-        f.name,
-        f.extension,
-        f.size,
-        f.mtime,
-        snippet(files_fts, 1, '<mark>', '</mark>', '...', 15) AS snippet
-      FROM files_fts
-      JOIN files f ON f.id = files_fts.rowid
-      WHERE files_fts MATCH ? AND f.is_deleted = 0 AND owlsift_file_visible(f.path) = 1
-      ORDER BY rank
-      LIMIT ?
-    `);
-
-        let contentMatches: IndexedFileRecord[] = [];
-        try {
-            contentMatches = stmt.all(formattedQuery, limit) as IndexedFileRecord[];
-        } catch (error) {
-            console.warn('FTS5 Search error; returning tag matches only:', error);
-        }
-
-        const terms = [...new Set(query.trim().split(/\s+/).map((term) => term.replace(/^#+/, '')).filter(Boolean))];
-        const tagMatches = terms.length ? this.db.prepare(`
-            SELECT f.id, f.path, f.name, f.extension, f.size, f.mtime,
-              CASE WHEN f.content = '' THEN f.name ELSE substr(f.content, 1, 240) END AS snippet
-            FROM files f
-            WHERE f.is_deleted = 0 AND owlsift_file_visible(f.path) = 1 AND EXISTS (
-              SELECT 1 FROM file_tags t
-              WHERE t.file_id = f.id AND (${terms.map(() => 'LOWER(t.tag) LIKE LOWER(?)').join(' OR ')})
-            )
-            ORDER BY f.name COLLATE NOCASE
-            LIMIT ?
-        `).all(...terms.map((term) => `%${term}%`), limit) as IndexedFileRecord[] : [];
-
-        const merged = new Map<number, IndexedFileRecord>();
-        for (const record of [...contentMatches, ...tagMatches]) merged.set(record.id, record);
-        return this.attachTags([...merged.values()].slice(0, limit));
+        if (!this.db || !this.searchIndex || typeof query !== 'string' || !query.trim()) return [];
+        return this.attachTags(this.searchIndex.search(query, limit), true);
     }
 
     /**
@@ -952,6 +1358,7 @@ class DatabaseManager {
             this.db.close();
             this.db = null;
             this.fileUpsert = null;
+            this.searchIndex = null;
         }
     }
 }
